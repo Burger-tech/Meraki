@@ -6,7 +6,8 @@
 
 - The visible DeepSeek WARP test advanced from the account picker to Navigation Experience after focused Right and Enter input. Two focused Continue attempts left that screen unchanged. The account picker averaged 14.86 FPS and setup averaged 10.28 FPS. The worker requested Windows system close and verified that the process exited. This second run took 7 minutes 12 seconds, exceeding the five-minute test cap. Player-controlled gameplay and the 60 FPS hardware target remain unverified. Local report: `.local/live-gameplay/REPORT-20261123.md`.
 - Across seven local logs, all 28 frame-interval requests from the title were 33.333 ms during startup and onboarding. VIctory honors the requested interval and calls Direct3D Present with sync interval zero. The measured menu cadence is therefore separate from host vsync.
-- In those WARP sessions, GPU wait accounted for 72–87% of median frame time at 4K. This identifies a menu bottleneck. First-mission GPU cost, shader model 6.6 and mesh shader support on the RX 7800 XT remain unverified.
+- In those WARP sessions, GPU wait accounted for 72–87% of median frame time at 4K. This identifies a menu bottleneck. First-mission GPU cost remains unverified.
+- A device-only D3D12 probe confirmed that the RX 7800 XT and WARP pass VIctory's shader model 6.6 and mesh shader checks. Both reported shader model 6.8 and mesh shader Tier 1. The pinned runtime sizes presentation from the title texture and has no independent resolution override. See the [hardware test plan](docs/hardware-gameplay-test.md).
 - The frame-pacing tool counts logged host present calls, including repeated title tokens. It does not infer presentations from token gaps. All 96 tests passed. Live gameplay measurement is pending.
 - A controlled 60 Hz versus 120 Hz advertised-mode comparison can test whether display modes influence the menu's requested interval. An unchanged request would leave other title settings and gameplay modes untested.
 

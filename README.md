@@ -13,6 +13,7 @@ Meraki launches a locally installed Xbox Series title on Windows 11 using a pinn
 | First-mission gameplay | Pending | Complete onboarding, reach a rendered mission and verify camera rotation and movement against a fixed landmark. |
 | Frame-pacing measurement | Tool verified | Calculate observed FPS and frame times from logged host present calls. Live gameplay trace pending. |
 | XCL, VIctory and Leonida comparison | Research complete | First controlled experiment compares cold and warm shader and pipeline caches on the same package and scene. See [upstream comparison](docs/upstream-comparison.md). |
+| Hardware graphics capability | Verified | The RX 7800 XT passes VIctory's shader model 6.6 and mesh shader checks. See [hardware test plan](docs/hardware-gameplay-test.md). |
 | Sustained 60 FPS on hardware | Unverified | Measure player-controlled gameplay on hardware with a 16.67 ms frame budget. Record resolution, run length and frame times. |
 
 [Detailed progress and test criteria](PROGRESS.md)
