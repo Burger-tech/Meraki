@@ -221,14 +221,25 @@ def _sample_brief(sample: dict) -> str:
     return ", ".join(parts)
 
 
-def _stat_line(label: str, values: dict | None, digits: int = 2) -> str:
+def _stat_line(
+    label: str,
+    values: dict | None,
+    digits: int = 2,
+    mean_digits: int | None = None,
+    of_total: int | None = None,
+) -> str:
     if not values:
         return f"  {label:<20} missing"
+    mean_digits = digits if mean_digits is None else mean_digits
+    suffix = ""
+    if of_total is not None and values["count"] != of_total:
+        suffix = f"  [n={values['count']} of {of_total}]"
     return (
         f"  {label:<20} min {_format_number(values['min'], digits)}"
         f"  max {_format_number(values['max'], digits)}"
-        f"  mean {_format_number(values['mean'], digits)}"
+        f"  mean {_format_number(values['mean'], mean_digits)}"
         f"  median {_format_number(values['median'], digits)}"
+        f"{suffix}"
     )
 
 
@@ -440,6 +451,7 @@ def _analyze(path: str, data: bytes, forced_encoding: str | None) -> dict:
             "seconds": span_seconds,
         },
         "host_samples": {
+            "kind": "sampled_periodic_average",
             "count": len(host_samples),
             "first": host_samples[0] if host_samples else None,
             "last": host_samples[-1] if host_samples else None,
@@ -458,6 +470,7 @@ def _analyze(path: str, data: bytes, forced_encoding: str | None) -> dict:
             "stats": stats,
         },
         "frame_intervals": {
+            "kind": "exact_interval_sums",
             "count": len(queue_lines),
             "first_frame": min(frames) if frames else None,
             "last_frame": max(frames) if frames else None,
@@ -475,6 +488,7 @@ def _analyze(path: str, data: bytes, forced_encoding: str | None) -> dict:
             "incomplete_lines": incomplete_queue,
         },
         "drop_reasons": {
+            "kind": "diagnostics_detail",
             "line_count": len(drop_details),
             "reasons": reason_list,
         },
@@ -510,16 +524,22 @@ def _print_text(result: dict, max_reasons: int) -> None:
         print("  MISSING: no victory_gpu::host fps lines")
     else:
         spacing = host["median_spacing_seconds"]
-        print(
-            f"  samples: {host['count']} | median spacing "
-            f"{_format_number(spacing, 2)} s"
-        )
+        if spacing is None:
+            print(f"  samples: {host['count']} | sample spacing: n/a")
+        else:
+            print(
+                f"  samples: {host['count']} | median sample spacing "
+                f"{spacing:.2f} s"
+            )
         for field in HOST_FIELDS:
+            integer_field = field in ("draws_per_frame", "being_made")
             print(
                 _stat_line(
                     HOST_FIELD_LABELS[field],
                     host["stats"][field],
-                    0 if field in ("draws_per_frame", "being_made") else 2,
+                    0 if integer_field else 2,
+                    mean_digits=1 if integer_field else None,
+                    of_total=host["count"],
                 )
             )
         dropped = host["stats"]["dropped_per_frame"]
@@ -531,12 +551,15 @@ def _print_text(result: dict, max_reasons: int) -> None:
         first = host["first"]
         last = host["last"]
         lowest = host["lowest_fps"]
-        if first:
-            print(f"  first sample: {first['timestamp']}  {_sample_brief(first)}")
-        if lowest:
-            print(f"  lowest fps:  {lowest['timestamp']}  {_sample_brief(lowest)}")
-        if last:
-            print(f"  last sample:  {last['timestamp']}  {_sample_brief(last)}")
+        if host["count"] == 1 and first:
+            print(f"  only sample: {first['timestamp']}  {_sample_brief(first)}")
+        else:
+            if first:
+                print(f"  first sample: {first['timestamp']}  {_sample_brief(first)}")
+            if lowest:
+                print(f"  lowest fps:  {lowest['timestamp']}  {_sample_brief(lowest)}")
+            if last:
+                print(f"  last sample:  {last['timestamp']}  {_sample_brief(last)}")
 
     frames_section = result["frame_intervals"]
     print()
@@ -577,9 +600,15 @@ def _print_text(result: dict, max_reasons: int) -> None:
     if not details["line_count"]:
         dropped = host["stats"]["dropped_per_frame"]
         if dropped and dropped["max"] == 0:
+            reporting = host["field_counts"]["dropped_per_frame"]
+            where = (
+                "every sample"
+                if reporting == host["count"]
+                else f"{reporting} of {host['count']} samples that report it"
+            )
             print(
                 "  no detail lines; the rounded host counter reports 0 "
-                "dropped/frame in every sample"
+                f"dropped/frame in {where}"
             )
         elif dropped:
             print("  MISSING: no detail lines, but sampled dropped/frame is non-zero")
