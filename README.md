@@ -2,6 +2,21 @@
 
 Meraki launches a locally installed Xbox Series title on Windows 11 using a pinned VIctory runtime. The launcher detects the executable from MicrosoftGame.Config and uses Leonida's RPF9 format findings to check common.rpf, levels.rpf and audio.rpf.
 
+## Progress tracker
+
+**Current milestone:** Reach the first mission and verify player-controlled camera and character movement. In the latest visible WARP run, the account picker averaged **14.86 FPS** and first-run setup averaged **10.28 FPS**. The run ended at Navigation Experience and the game closed.
+
+| Milestone | Status | Evidence or completion criteria |
+| --- | --- | --- |
+| Windows launcher and runtime builds | Verified | Diagnostic and release builds pass. The launcher detects the package, checks imports and launches with WARP. |
+| Title startup and menu input | Verified | The title rendered the opening and reached first-run setup. Focused keyboard input advanced the account picker. |
+| First-mission gameplay | Pending | Complete onboarding, reach a rendered mission and verify camera rotation and movement against a fixed landmark. |
+| Frame-pacing measurement | In review | Calculate FPS and frame times from logged host presentation events. Validate on a live trace. |
+| XCL, VIctory and Leonida comparison | In progress | Identify a compatibility change and compare it on the same package and scene. |
+| Sustained 60 FPS on hardware | Unverified | Measure player-controlled gameplay on hardware with a 16.67 ms frame budget. Record resolution, run length and frame times. |
+
+[Detailed progress and test criteria](PROGRESS.md)
+
 ## Build and launch
 
 Meraki uses [VIctory](https://github.com/Marvisak/VIctory) as its runnable Windows baseline. Compatibility work also compares [XCL](https://github.com/ivall/xcl) for Direct3D 12 and shader translation behavior, and [Leonida](https://github.com/ItsNotRexed/Leonida) for package analysis and its independent graphics implementation. Compare changes against the same package and test scene before integrating them.
@@ -19,8 +34,6 @@ The build installs the pinned Rust toolchain under .local and produces baseline/
 The launcher searches D:\ and its immediate subfolders for the package manifest. Use **Browse** to select a title elsewhere. **Inspect** checks the archive headers and shows executable information. **Check imports** prepares the executable and lists resolved and missing imports for each module without starting the title. **Launch with WARP** runs the diagnostic build on Microsoft's CPU-based Direct3D adapter. This can be slow. Upstream reports that world rendering on a hardware GPU can reset the display driver.
 
 With the game window focused and no controller connected, Enter acts as A, Backspace as B, the arrow keys as the D-pad and WASD as the left stick. **Stop** ends the running process. **Open full log** opens the selected session's output. Session logs, caches and saves live under .local.
-
-See [PROGRESS.md](PROGRESS.md) for local test results and the current gameplay milestone.
 
 ## Diagnose a dark scene
 
