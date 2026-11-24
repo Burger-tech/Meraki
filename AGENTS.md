@@ -44,3 +44,5 @@ D:\\  ## This drive has the GTA 6 files from an xbox build that you will be gett
 
 \- Maintain PROGRESS.md within C:\\Meraki.
 
+- Use `python` explicitly for Python commands in Windows shells and in delegated worker briefs.
+

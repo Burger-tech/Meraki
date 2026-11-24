@@ -25,3 +25,5 @@ See [PROGRESS.md](PROGRESS.md) for local test results and the current gameplay m
 Select **Save diagnostic frames on launch**, then **Launch with WARP**. Each captured run gets a folder beside its log under `.local/logs`. The folder and log share the same session name. VIctory saves presented frames 1, 2, 4, 8 and subsequent powers of two.
 
 To investigate a transition, find the last visible scene and first dark scene in that sequence. Look up the corresponding `frame presented` lines in the session log. Each line counts draws and dispatches since the previous logged frame. The separate `victory_gpu::host` lines periodically sample FPS, draws per frame and draws dropped for lack of a pipeline. A displayed zero is rounded. Capture timing and software-rendering performance can differ from a normal run.
+
+Run `python tools/render_log.py .local/smoke/boot.log` to summarize a capture log. Substitute the path to your session log for another run.
