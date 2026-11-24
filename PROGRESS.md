@@ -43,6 +43,8 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 
 ### World rendering investigation
 
+- The updated VIctory `ffe310e` diagnostic build reached the opening credits on the RX 7800 XT. The first 60 seconds averaged 28.94 presents per second. Credits averaged 0.45, and the run ended after token 3540 with `0x887A0006` and a DRED page fault. No mission geometry or player control was verified. This was a cold-cache run with a changed driver and concurrent offline translation. Evidence: `.local/upstream-hardware/REPORT.md`.
+
 - On the same shader archive, offline DXIL emissions fell from 22,156 at `d2a4bae` to 21,886 at `ffe310e`. Compute fell from 1,693 to 1,441. Resource tracking reached 234 more programs, while more programs then failed emission. The new test executable matches the freshly built diagnostics binary by SHA-256. This census omitted DXIL validation and pipeline creation. DeepSeek is investigating which previously emitted shaders were lost.
 
 - The older PR #32 hardware probe lost the RX 7800 XT with `0x887A0006` during a staging-texture upload after token 1708. DRED recorded a page fault and breadcrumbs stopped at command 14 of 1,319. No Windows display-reset event or dump was found. Menus and intro averaged 26.55 presents per second in the first minute, with 33.84 ms p95. No playable world appeared. The driver changed after the reboot, and a bounded run on `ffe310e` is assigned. This comparison changes both runtime and driver.

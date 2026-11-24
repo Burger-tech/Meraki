@@ -119,7 +119,7 @@ Confirm the game window has keyboard focus before sending input.
 
 ## Progress tracker
 
-**Current milestone:** Reach the first mission and verify player-controlled camera and character movement. Local WARP onboarding measured **14.86 FPS** at the account picker and **10.28 FPS** during first-run setup. These are menu/setup numbers, not mission FPS. Recent mission attempts reached the mission loading card, then went black and lost the D3D12 device. Mission FPS is unverified.
+**Current milestone:** Reach the first mission and verify player-controlled camera and character movement. On the RX 7800 XT, VIctory `ffe310e` averaged **28.94 presents per second** in the first minute of startup and menus. The run reached the opening credits, then lost the D3D12 device. Mission geometry, player control, and 30 FPS gameplay remain unverified.
 
 | Milestone | Status | Evidence or completion criteria |
 | --- | --- | --- |
