@@ -11,7 +11,7 @@ Meraki launches a locally installed Xbox Series title on Windows 11 using a pinn
 | Windows launcher and runtime builds | Verified | Diagnostic and release builds pass. The launcher detects the package, checks imports and launches with WARP. |
 | Title startup and menu input | Verified | The title rendered the opening and reached first-run setup. Focused keyboard input advanced the account picker. |
 | First-mission gameplay | Pending | Complete onboarding, reach a rendered mission and verify camera rotation and movement against a fixed landmark. |
-| Frame-pacing measurement | In review | Calculate FPS and frame times from logged host presentation events. Validate on a live trace. |
+| Frame-pacing measurement | Tool verified | Calculate observed FPS and frame times from logged host present calls. Live gameplay trace pending. |
 | XCL, VIctory and Leonida comparison | In progress | Identify a compatibility change and compare it on the same package and scene. |
 | Sustained 60 FPS on hardware | Unverified | Measure player-controlled gameplay on hardware with a 16.67 ms frame budget. Record resolution, run length and frame times. |
 
@@ -36,6 +36,8 @@ The launcher searches D:\ and its immediate subfolders for the package manifest.
 With the game window focused and no controller connected, Enter acts as A, Backspace as B, the arrow keys as the D-pad and WASD as the left stick. **Stop** ends the running process. **Open full log** opens the selected session's output. Session logs, caches and saves live under .local.
 
 ## Diagnose a dark scene
+
+For a diagnostics run with `VICTORY_LOG=info,victory_gpu::frame=debug`, summarize the logged host present calls with `python tools/frame_pacing.py LOG`. VIctory logs after calling Present without checking its result, so the report measures host call cadence. Confirm visible gameplay separately.
 
 Select **Save diagnostic frames on launch**, then **Launch with WARP**. Each captured run gets a folder beside its log under `.local/logs`. The folder and log share the same session name. VIctory saves presented frames 1, 2, 4, 8 and subsequent powers of two.
 
