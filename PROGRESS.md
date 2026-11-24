@@ -9,7 +9,7 @@
 
 DeepSeek implemented 11 launcher regression tests covering runtime routing, archive headers, and opt-in captures. All passed with `python -B -m unittest discover -s tests -v`.
 
-The rendering-log audit reproduced misleading totals from truncated, missing, and repeated frame records. DeepSeek is updating the parser to report interval coverage and distinguish draw counter differences from dropped-pipeline diagnostics. A separate worker is preparing the first-mission input and capture test.
+The rendering-log audit reproduced misleading totals from truncated, missing, and repeated frame records. The parser now reports interval coverage and distinguishes draw counter differences from dropped-pipeline diagnostics. All 48 tests passed. The local boot log still reports complete coverage through frame 1024 with 16,430 draws and 957 dispatches executed. A separate worker is preparing the first-mission input and capture test.
 
 ## November 23, 2026
 
