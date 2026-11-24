@@ -7,6 +7,9 @@
 
 ### Live gameplay acceptance
 
+- The isolated Rust capture candidate copies timed readback data into owned memory and encodes it on a bounded worker queue. The diagnostics build and 67 GPU tests passed, with one ignored. A short RX 7800 XT startup run saved five timed frames with a 2.533-second median and 4.300-second maximum gap and exited with code 0. A matched test is still needed to quantify render-thread overhead. Queued frames may be lost at process exit.
+- DeepSeek is evaluating RenderDoc and `rdc-cli` on a synthetic Direct3D 12 scene for render-target and binding inspection. Timed runtime capture remains the live screenshot path.
+
 - The 60 FPS study found 111 of 111 title interval requests at 33.333 ms across 23 logs. VIctory passes the requested interval through. In sampled hardware mission-transition frames, title-memory copies and copy-back dominated frame time. The synthetic timing model does not establish how the title's simulation would respond to a faster clock. Keep native pacing while validating the first mission at 15–30 FPS.
 
 - A direct hardware capture smoke test saved five startup images at a 2.506-second median gap. The final image showed the account-picker prompts over a dark menu background. The run ended with exit code 0 after a Windows system-close request. This short run did not advance into the mission. Local evidence: `.local/sol-capture-20261124-112128`.
@@ -50,6 +53,18 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 - The first-run flow reached Rockstar Games Legal Terms & Policies. Terms of Service was unchecked and Confirm was disabled. Testing stopped there for the user to review the terms. Locally verified milestones currently end at onboarding.
 
 ### World rendering investigation
+
+- The descriptor retirement follow-up reproduced a premature release when a completed command list is replayed without reset. The revised patch keeps lists armed until reset or drop, and skips retirement after a failed fence wait. Game-free diagnostics tests passed (62 passed, one ignored). A full diagnostics executable and one RX 7800 XT mission test are underway.
+
+- The first descriptor bounds candidate built and passed 468 workspace tests with seven ignored. Review found a live-test blocker: its minimum clamp can send an invalid index near the limit to the wrong typed-null slot. A follow-up is implementing exact boundary selection and checking the generated DXIL before a hardware run.
+
+- The retirement review reproduced unbounded retention from an idle command list and found that failed fence waits must block reclamation. Its revised model passed 56 GPU tests with one ignored. A separate build is checking replayed command lists before a live run, since a completed submission can still leave a list eligible for replay.
+
+- A game-free D3D12 regression confirmed that replacing a descriptor slot in `ffe310e` can drop its previous resource reference while a list is live. A retirement patch passed the regression and 53 GPU tests, with one ignored. The patch retains the old allocation but leaves the slot pointing to the new resource. Review is underway for retention growth with long-lived lists before a live hardware run. Neither hardware crash has been tied to this exact code path.
+
+- The fxceless source audit found that emitted view handles can omit a bounds check when the full heap is available, and sampler bounds can exceed the actual heap. The DRED address is consistent with an out-of-range descriptor index, although the triggering instruction is not identified. A defensive candidate is assigned to use live heap limits and preserve valid accesses, with CPU and shader IR tests.
+
+- The fxceless `578d459` hardware run rendered detailed intro cards and reached mission entry with audio. Credits overlapped and froze, then the mission went black. Menus and credits had a 33.3 ms median presentation interval; mission entry measured 0.95 presents per second. The device was removed after an eight-list submission. DRED reported a fault address far beyond the view and sampler heap ranges. That calculation does not prove which descriptor caused the fault. The process exited, and no retry was made. Evidence: `.local/fxceless-live/session-20261124-113816/REPORT-20261124-live.md`.
 
 - The compute lowerer investigation isolated all 253 previously emitted programs lost at `ffe310e` to `3dd467c`, which keeps values live through successive control-flow joins. The old output substituted zero where the title needed a descriptor word. Keep the liveness fix. Correct emission requires support for descriptor contents used as data. The synthetic probe recovered the counts by reverting liveness only as an experiment.
 

@@ -1,8 +1,8 @@
 # Meraki
 
-Meraki is a Windows launcher and diagnostics harness for a locally installed Xbox Series X|S title. It uses the pinned [VIctory](https://github.com/Marvisak/VIctory) runtime, detects the title from `MicrosoftGame.Config`, checks `common.rpf`, `levels.rpf` and `audio.rpf`, and launches the diagnostic build on the hardware GPU by default.
+Meraki is a Windows launcher and diagnostics harness for a locally installed Xbox Series X|S title. It uses the pinned [VIctory](https://github.com/Marvisak/VIctory) runtime (`ffe310e`), detects the title from `MicrosoftGame.Config`, checks `common.rpf`, `levels.rpf` and `audio.rpf`, and launches the diagnostic build on the hardware GPU by default.
 
-Meraki contains no game data. The current build is not playable through the first mission. Menus and onboarding work, but recent WARP mission attempts reached the mission loading card, then went black and lost the D3D12 device. Mission rendering, player control and mission FPS are unverified.
+Meraki contains no game data. The current build is not playable through the first mission. The title's menus render at 30 FPS (33.3 ms median), but the latest hardware mission attempt reached mission entry with audio only and a black screen, then lost the D3D12 device. Mission geometry, player control and mission FPS are unverified.
 
 ## Availability and access
 
@@ -61,7 +61,7 @@ The launcher and tools need no third-party Python packages. Run the regression s
 python -B -m unittest discover -s tests -v
 ```
 
-The current suite has 113 tests, including tests that construct the Tk launcher in withdrawn windows.
+The current suite has 114 tests, including tests that construct the Tk launcher in withdrawn windows.
 
 ## Local title requirements
 
@@ -117,17 +117,29 @@ Confirm the game window has keyboard focus before sending input.
 
 ## Progress tracker
 
-**Current milestone:** Render the first mission on hardware with responsive camera and character movement at **15–30 FPS**. On the RX 7800 XT, VIctory `ffe310e` averaged **28.94 presents per second** in the first minute of startup and menus. The run reached the opening credits, then lost the D3D12 device. Mission geometry, player control, and gameplay FPS remain unverified.
+**Current milestone:** Render the first mission on hardware with responsive camera and character movement at **15–30 FPS**. Menus met the title's **30 FPS** request at a 33.3 ms median present interval on the RX 7800 XT. The latest fxceless comparison run reached mission entry with audio only and black frames at about **1 FPS**, then lost the device. Mission geometry, player control and gameplay FPS remain unverified.
 
 | Milestone | Status | Evidence or completion criteria |
 | --- | --- | --- |
-| Windows launcher and runtime builds | Verified | Diagnostic and release builds pass. The launcher detects the package, checks imports and offers GPU and WARP rendering. |
-| Title startup and menu input | Verified | The title rendered the opening and reached first-run setup. Focused keyboard input advanced the account picker. |
+| Windows launcher and runtime builds | Verified | Diagnostic and release builds pass, and the 114-test Python suite passes. The launcher detects the package, checks imports and offers GPU and WARP rendering. |
+| Title startup and menu input | Verified | A hardware run rendered the lit opening video, logos and Jason/Lucia loading cards. Menus measured a 33.3 ms median present interval (30.0 FPS); focused keyboard input was accepted. |
 | First-mission gameplay | Pending | Complete onboarding, reach a rendered mission and verify camera rotation and movement against a fixed landmark. |
 | Frame-pacing measurement | Tool verified | Menu-only present-call pacing works. Live gameplay trace pending. |
 | XCL, VIctory and Leonida comparison | Research complete | First controlled experiment compares cold and warm shader and pipeline caches on the same package and scene. See [upstream comparison](docs/upstream-comparison.md). |
-| Hardware graphics capability | Verified | The RX 7800 XT and WARP pass the shader model 6.6 and mesh shader capability check. This is not a world-rendering result. See [hardware test plan](docs/hardware-gameplay-test.md). |
+| Hardware graphics capability | Verified | The RX 7800 XT and WARP pass the shader model 6.6 and mesh shader capability check. This is not a world-rendering result. See [hardware gameplay test plan](docs/hardware-gameplay-test.md). |
+| Timed-capture candidate | Unit-tested; startup smoke | 67 GPU tests pass with one ignored. A startup run saved five timed frames; render-thread overhead is unmeasured. |
+| Replay-safe descriptor retirement candidate | Unit-tested; live pending | Replay regressions and 59 default / 62 diagnostics `victory-gpu` tests pass with one ignored. No title run yet. |
 | First mission at 15–30 FPS on hardware | Unverified | Measure a player-controlled segment using the title's native pacing. Record resolution, run length and frame times. |
+
+### Latest runtime evidence
+
+These results come from isolated comparison candidates, not from the pinned `ffe310e` runtime that `Build.ps1` produces.
+
+**Hardware mission attempt (fxceless `578d459`).** The `fxceless/victory-gta6` comparison fork produced substantially more complete pre-mission visuals than earlier runs but did not reach a playable mission. On the RX 7800 XT, the opening video, logos and Jason/Lucia loading cards rendered lit and detailed, and menus met the 30 FPS request at a 33.3 ms median interval. Credits then appeared over black, with overlapping rows, and froze; mission entry presented audio-only black frames at about **0.95 FPS**, and the host removed the device (`0x887A0006`) after an eight-list submission. DRED reported a fault address far beyond the view and sampler heap ranges, consistent with an out-of-range descriptor index; it does not identify the triggering instruction. The process exited and the run was not repeated. Evidence: `.local/fxceless-live/session-20261124-113816/REPORT-20261124-live.md`.
+
+**Rapid timed capture (Rust candidate).** The isolated capture candidate copies each timed readback into owned memory and encodes it on a bounded worker queue, so encoding does not run on the render thread. The diagnostics build succeeded, and 67 GPU tests passed with one ignored. A short RX 7800 XT startup run saved five timed frames with a 2.533 s median gap and a 4.300 s maximum gap, then exited with code 0. This is screenshot cadence, not an FPS result: a matched run is still needed to measure render-thread overhead, and frames still queued at process exit can be lost. Evidence: `.local/async-smoke-20261124-125938`.
+
+**Replay-safe descriptor retirement (candidate).** A game-free review showed that a completed submission does not end a command list's recording: a closed list can be executed again without `Reset`. A candidate that disarmed lists after every completed submission could therefore free a descriptor slot that a replay still names. The corrected candidate keeps a recorded list armed until `Reset` or drop, skips retirement after a failed fence wait, and still lets never-recorded idle lists release. Targeted replay regressions pass, as do 59 default and 62 diagnostics `victory-gpu` tests (one ignored), with no clippy warnings from the crate. A diagnostics counter now logs replayed lists. The cost is that a recorded list retains displaced slots until reset; retention is bounded by list lifetime. No live title run has used this candidate, so its hardware effect is pending. Evidence: `.local/retirement-live/REPORT.md`.
 
 [Detailed progress and test criteria](PROGRESS.md)
 
@@ -145,7 +157,7 @@ Confirm the game window has keyboard focus before sending input.
 | An RPF badge is missing or unrecognized | Put `common.rpf`, `levels.rpf` and `audio.rpf` beside the executable. The badge checks only the RPF9 header. |
 | `python Meraki.pyw` fails with `No module named tkinter` | Repair or reinstall Python with Tcl/Tk support. |
 | Windows error 1455 or out-of-commit errors | Close other applications or increase the Windows paging file, then retry. |
-| A mission entry is black or the D3D12 device is removed | This is the current compatibility blocker, not a setup failure. Stop the run, keep the session log and capture, and do not use that run as an FPS result. |
+| A mission entry is black or the D3D12 device is removed | Current compatibility blocker, not a setup failure. The latest hardware run reached mission entry with audio only at about 1 FPS, then lost the device (`0x887A0006`) with descriptor addresses past the heap ranges. Stop the run, keep the session log and capture, and do not use it as an FPS result. |
 | WARP is slow | Expected for software rendering. The menu/setup FPS numbers are not mission FPS. |
 
 ## Diagnostics

@@ -42,7 +42,7 @@ D:\\  ## This drive has the GTA 6 files from an xbox build that you will be gett
 
 \- Delegate most implementation, compilation, testing, and research to up to four concurrent DeepSeek workers through T3 Code. Use DeepInfra with `deepseek-ai/DeepSeek-V4.1-Flash-1017`.
 
-\- Sol leads architecture, difficult debugging, review, and integration. Assign distinct ownership to workers and use isolated Git worktrees when edits overlap.
+\- When the lead is a ChatGPT model, it coordinates only and must delegate all project work to DeepSeek workers, including architecture, debugging, implementation, builds, testing, review, and integration. Assign distinct ownership and use isolated Git worktrees when edits overlap.
 
 \- Maintain PROGRESS.md within C:\\Meraki.
 
