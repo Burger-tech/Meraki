@@ -1,6 +1,6 @@
 # Meraki progress
 
-- Added XCL to the upstream comparison alongside VIctory and Leonida. Reference revisions for the comparison are XCL `e50836b`, VIctory `d2a4bae`, and the local read-only Leonida checkout `aa2988c`. DeepSeek is checking build and licensing details and identifying a first controlled comparison. No runtime integration has been verified.
+- Completed the [upstream comparison](docs/upstream-comparison.md) for XCL `e50836b`, VIctory `d2a4bae`, and the local read-only Leonida checkout `aa2988c`. XCL built in debug and listed 745 test entries. XCL game execution and runtime integration remain unverified. The first controlled experiment compares cold and warm shader and pipeline caches on the same package and scene.
 
 ### Live gameplay acceptance
 
@@ -31,6 +31,9 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 - The first-run flow reached Rockstar Games Legal Terms & Policies. Terms of Service was unchecked and Confirm was disabled. Testing stopped there for the user to review the terms. Locally verified milestones currently end at onboarding.
 
 ### World rendering investigation
+
+- VIctory developers reported two separate failure modes at first-mission entry. Cold shader compilation can stall rendering long enough for the title to close. Once shaders are cached, a GPU ordering problem can still leave rendering passes reading data before it was written, producing a black screen or crash. Upstream reported a fix in progress. Both findings still need local reproduction against Meraki's pinned revision.
+- Preserve the shader cache between matched runs. Compare cold and warm runs using separate workspace cache directories, and correlate compile activity with presentation gaps and exit timing. If the warm run remains dark, capture the affected frames and examine GPU submission ordering and missing writes alongside pipeline counters. Compare any upstream fix against the current pin on the same build and scene.
 
 A community report describes intro audio continuing over a black screen. VIctory's pinned README reports rendering the first mission's title card followed by a dark scene and identifies dropped draws from untranslated shaders. Compare a captured frame after mission entry with the same interval's draw, dispatch and missing-pipeline counters. In the local intro interval ending at frame 512, all 1,536 draws and 256 dispatches executed. This gives a working comparison point before world rendering. [Community report](https://www.reddit.com/r/FitGirlRepack/comments/1y3x934/rip_leonida/) and [VIctory runtime status](https://github.com/Marvisak/VIctory/blob/d2a4bae1f49533ef5cb512fd1b1ba1513f2e1989/README.md)
 
