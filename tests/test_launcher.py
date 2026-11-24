@@ -8,6 +8,7 @@ header report and the opt-in diagnostic capture environment.
 
 from __future__ import annotations
 
+import codecs
 import importlib.machinery
 import importlib.util
 import os
@@ -422,6 +423,335 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertIn("Build the diagnostics runtime", errors[0])
         self.assertEqual(stub.polls, 0)
 
+
+class _RunningProcess:
+    def __init__(self, pid=4242):
+        self.pid = pid
+        self.code = None
+        self.terminated = 0
+
+    def poll(self):
+        return self.code
+
+    def terminate(self):
+        self.terminated += 1
+
+
+class _Root:
+    def __init__(self):
+        self.scheduled = []
+        self.cancelled = []
+        self.destroyed = False
+
+    def after(self, delay, callback, *args):
+        token = f"timer-{len(self.scheduled)}"
+        self.scheduled.append((delay, callback, args, token))
+        return token
+
+    def after_cancel(self, token):
+        self.cancelled.append(token)
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class _Reader:
+    def __init__(self, data=b""):
+        self.data = data
+        self.closed = False
+
+    def read(self, _size):
+        data, self.data = self.data, b""
+        return data
+
+    def close(self):
+        self.closed = True
+
+
+def _stop_stub(process, reader=None):
+    """Build the state the stop and close methods touch."""
+
+    stub = types.SimpleNamespace(
+        root=_Root(),
+        process=process,
+        reader=reader,
+        stopping=False,
+        closing=False,
+        stop_timer=None,
+        status=_Variable("Running."),
+        stop=_Control(),
+        output=_Text(),
+        entry=_Control(),
+        browse=_Control(),
+        inspect=_Control(),
+        check=_Control(),
+        launch=_Control(),
+        capture_toggle=_Control(),
+        open_log=_Control(),
+        decoder=codecs.getincrementaldecoder("utf-8")(errors="replace"),
+        log_path=None,
+    )
+    # Bind the helpers the flow methods call on themselves.
+    stub.terminate = lambda: meraki.Launcher.terminate(stub)
+    stub.poll = lambda: meraki.Launcher.poll(stub)
+    stub._force_stop = lambda process: meraki.Launcher._force_stop(stub, process)
+    stub._cancel_stop_timer = lambda: meraki.Launcher._cancel_stop_timer(stub)
+    stub._finish_close = lambda: meraki.Launcher._finish_close(stub)
+    return stub
+
+
+class StopFlowTests(unittest.TestCase):
+    def test_stop_posts_close_and_forces_termination_after_the_grace_period(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process)
+        posts = []
+
+        def post(hwnd):
+            posts.append(hwnd)
+            return True
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=0x1234) as find, mock.patch.object(
+            meraki, "post_system_close", side_effect=post
+        ):
+            meraki.Launcher.terminate(stub)
+
+        find.assert_called_once_with(process.pid)
+        self.assertEqual(posts, [0x1234])
+        self.assertTrue(stub.stopping)
+        self.assertEqual(stub.status.get(), "Stopping...")
+        self.assertEqual(stub.stop.states, ["disabled"])
+        self.assertEqual(len(stub.root.scheduled), 1)
+        delay, callback, args, token = stub.root.scheduled[0]
+        self.assertEqual(delay, meraki.CLOSE_GRACE_MS)
+        self.assertEqual(process.terminated, 0)
+
+        callback(*args)
+        self.assertEqual(process.terminated, 1)
+        self.assertIsNone(stub.stop_timer)
+        self.assertEqual(stub.root.cancelled, [])
+
+    def test_stop_without_a_window_terminates_immediately(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process)
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=None), mock.patch.object(
+            meraki, "post_system_close"
+        ) as post:
+            meraki.Launcher.terminate(stub)
+
+        post.assert_not_called()
+        self.assertTrue(stub.stopping)
+        self.assertEqual(process.terminated, 1)
+        self.assertEqual(stub.root.scheduled, [])
+        self.assertIsNone(stub.stop_timer)
+
+    def test_stop_forces_termination_when_the_close_cannot_be_posted(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process)
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=7), mock.patch.object(
+            meraki, "post_system_close", return_value=False
+        ):
+            meraki.Launcher.terminate(stub)
+
+        self.assertEqual(process.terminated, 1)
+        self.assertEqual(stub.root.scheduled, [])
+
+    def test_stop_is_idempotent_while_the_title_is_closing(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process)
+        posts = []
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=9), mock.patch.object(
+            meraki, "post_system_close", side_effect=lambda hwnd: posts.append(hwnd) or True
+        ):
+            meraki.Launcher.terminate(stub)
+            meraki.Launcher.terminate(stub)
+
+        self.assertEqual(posts, [9])
+        self.assertEqual(len(stub.root.scheduled), 1)
+        self.assertEqual(process.terminated, 0)
+
+    def test_stale_grace_callback_does_not_stop_a_new_run(self):
+        old = _RunningProcess()
+        stub = _stop_stub(old)
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=3), mock.patch.object(
+            meraki, "post_system_close", return_value=True
+        ):
+            meraki.Launcher.terminate(stub)
+
+        _delay, callback, args, _token = stub.root.scheduled[0]
+        new = _RunningProcess(pid=77)
+        stub.process = new
+        stub.stopping = False
+        callback(*args)
+
+        self.assertEqual(old.terminated, 0)
+        self.assertEqual(new.terminated, 0)
+
+
+class CloseFlowTests(unittest.TestCase):
+    def test_confirmed_close_posts_close_and_destroys_after_exit(self):
+        process = _RunningProcess()
+        reader = _Reader(b"last output")
+        stub = _stop_stub(process, reader)
+        posts = []
+
+        with mock.patch.object(meraki, "find_visible_window", return_value=9), mock.patch.object(
+            meraki, "post_system_close", side_effect=lambda hwnd: posts.append(hwnd) or True
+        ), mock.patch.object(meraki.messagebox, "askyesno", return_value=True):
+            meraki.Launcher.close(stub)
+
+        self.assertTrue(stub.closing)
+        self.assertFalse(stub.root.destroyed)
+        self.assertEqual(posts, [9])
+        self.assertEqual(process.terminated, 0)
+
+        process.code = 0
+        meraki.Launcher.poll(stub)
+        self.assertFalse(stub.root.destroyed)
+        _delay, callback, args, _token = stub.root.scheduled[-1]
+        callback(*args)
+
+        self.assertTrue(stub.root.destroyed)
+        self.assertTrue(reader.closed)
+        self.assertIsNone(stub.reader)
+        self.assertIsNone(stub.process)
+        self.assertEqual(stub.status.get(), "Stopped.")
+        self.assertEqual(stub.root.cancelled, ["timer-0"])
+
+    def test_confirmed_close_without_a_window_terminates_immediately(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process, _Reader(b""))
+
+        with mock.patch.object(meraki.messagebox, "askyesno", return_value=True), mock.patch.object(
+            meraki, "find_visible_window", return_value=None
+        ), mock.patch.object(meraki, "post_system_close") as post:
+            meraki.Launcher.close(stub)
+
+        post.assert_not_called()
+        self.assertEqual(process.terminated, 1)
+        self.assertFalse(stub.root.destroyed)
+
+        process.code = 1
+        meraki.Launcher.poll(stub)
+        self.assertTrue(stub.root.destroyed)
+
+    def test_cancelled_close_leaves_the_title_running(self):
+        process = _RunningProcess()
+        stub = _stop_stub(process)
+
+        with mock.patch.object(meraki.messagebox, "askyesno", return_value=False), mock.patch.object(
+            meraki, "find_visible_window"
+        ) as find, mock.patch.object(meraki, "post_system_close") as post:
+            meraki.Launcher.close(stub)
+
+        find.assert_not_called()
+        post.assert_not_called()
+        self.assertFalse(stub.closing)
+        self.assertFalse(stub.root.destroyed)
+        self.assertEqual(process.terminated, 0)
+
+    def test_close_without_a_process_destroys_the_window(self):
+        reader = _Reader()
+        stub = _stop_stub(None, reader)
+
+        meraki.Launcher.close(stub)
+
+        self.assertTrue(stub.root.destroyed)
+        self.assertTrue(reader.closed)
+        self.assertIsNone(stub.reader)
+
+
+class PollCleanupTests(unittest.TestCase):
+    def test_normal_exit_reenables_controls_and_clears_the_process(self):
+        process = _RunningProcess()
+        process.code = 7
+        reader = _Reader(b"")
+        stub = _stop_stub(process, reader)
+
+        meraki.Launcher.poll(stub)
+
+        self.assertIsNone(stub.process)
+        self.assertIsNone(stub.reader)
+        self.assertTrue(reader.closed)
+        self.assertEqual(stub.status.get(), "Runtime exited with code 7.")
+        self.assertFalse(stub.root.destroyed)
+        self.assertEqual(stub.stop.states[-1], "disabled")
+        for control in (
+            stub.entry,
+            stub.browse,
+            stub.inspect,
+            stub.check,
+            stub.launch,
+            stub.capture_toggle,
+        ):
+            self.assertEqual(control.states[-1], "normal")
+
+
+class _Function:
+    def __init__(self, impl):
+        self.impl = impl
+
+    def __call__(self, *args):
+        return self.impl(*args)
+
+
+def _window_api(windows):
+    """Fake user32 surface for ``find_visible_window`` and ``post_system_close``."""
+
+    def enum(callback, _param):
+        for hwnd in windows:
+            if not callback(hwnd, 0):
+                return 0
+        return 1
+
+    def get_pid(hwnd, pointer):
+        pointer.contents.value = windows[hwnd][0]
+
+    def visible(hwnd):
+        return windows[hwnd][1]
+
+    def ancestor(hwnd, _kind):
+        return windows[hwnd][2]
+
+    return types.SimpleNamespace(
+        EnumWindows=_Function(enum),
+        GetWindowThreadProcessId=_Function(get_pid),
+        IsWindowVisible=_Function(visible),
+        GetAncestor=_Function(ancestor),
+        PostMessageW=_Function(lambda *args: 1),
+    )
+
+
+class WindowApiTests(unittest.TestCase):
+    def test_lookup_returns_only_a_visible_top_level_window_of_the_pid(self):
+        windows = {
+            10: (111, True, 10),
+            20: (4242, False, 20),
+            30: (4242, True, 99),
+            40: (4242, True, 40),
+        }
+
+        with mock.patch.object(meraki.ctypes, "WinDLL", return_value=_window_api(windows)):
+            self.assertEqual(meraki.find_visible_window(4242), 40)
+
+    def test_lookup_returns_none_without_a_match(self):
+        windows = {10: (111, True, 10), 20: (4242, False, 20)}
+
+        with mock.patch.object(meraki.ctypes, "WinDLL", return_value=_window_api(windows)):
+            self.assertIsNone(meraki.find_visible_window(4242))
+
+    def test_post_system_close_uses_the_close_command(self):
+        calls = []
+        api = _window_api({})
+        api.PostMessageW = _Function(lambda *args: calls.append(args) or 1)
+
+        with mock.patch.object(meraki.ctypes, "WinDLL", return_value=api):
+            self.assertTrue(meraki.post_system_close(0x55))
+
+        self.assertEqual(calls, [(0x55, meraki.WM_SYSCOMMAND, meraki.SC_CLOSE, 0)])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

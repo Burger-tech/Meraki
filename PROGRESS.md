@@ -1,6 +1,15 @@
 # Meraki progress
 
-DeepSeek implemented 11 launcher regression tests covering runtime routing, archive headers, and opt-in captures. All passed with python -B -m unittest discover -s tests -v. The runtime log accuracy audit is pending.
+### Live gameplay acceptance
+
+- Run interactive gameplay tests with the game window visible on the Windows desktop. Announce each live run before launch, share milestones during the run, and close the game afterward. Use the launcher to keep the live log available.
+- The performance target is sustained 60 FPS during player-controlled gameplay, with a 16.67 ms frame budget. Verify camera and movement in a visibly rendered scene before measuring. Record the renderer, resolution, duration, and frame pacing. Use WARP to diagnose rendering and use hardware results to evaluate the performance target. Upstream reports hardware GPU resets on world entry, so establish a controlled hardware test after the mission renders.
+- During the first visible mission, record an idle baseline, rotate the camera in both directions, then move forward and backward against a fixed landmark. Capture the matching frames and use the black-frame probe history to distinguish a fade from sustained dark output. Confirm keyboard focus before sending input.
+- Launcher Stop now requests VIctory's Windows system-close path. A visible WARP smoke test presented frames and reached the runtime suspend handler. VIctory hit its one-second suspension deadline and exited with code 0. Pipeline cache persistence remains unverified.
+
+DeepSeek implemented 11 launcher regression tests covering runtime routing, archive headers, and opt-in captures. All passed with `python -B -m unittest discover -s tests -v`.
+
+The rendering-log audit reproduced misleading totals from truncated, missing, and repeated frame records. DeepSeek is updating the parser to report interval coverage and distinguish draw counter differences from dropped-pipeline diagnostics. A separate worker is preparing the first-mission input and capture test.
 
 ## November 23, 2026
 
