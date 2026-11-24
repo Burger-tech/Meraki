@@ -41,6 +41,8 @@ def runtime_command(action, exe):
         raise ValueError("Build the diagnostics runtime first. Run .\\Build.ps1 in the Meraki folder.")
     if action == "launch":
         return [str(runtime), "run", str(exe), "--execute"]
+    if action == "check":
+        return [str(runtime), "run", str(exe)]
     return [str(runtime), "inspect", str(exe)]
 
 
@@ -84,9 +86,10 @@ class Launcher:
         bar = ttk.Frame(frame)
         bar.grid(row=3, columnspan=2, sticky="w", pady=(12, 8))
         self.inspect = ttk.Button(bar, text="Inspect", command=lambda: self.start("inspect"))
+        self.check = ttk.Button(bar, text="Check imports", command=lambda: self.start("check"))
         self.launch = ttk.Button(bar, text="Launch with WARP", command=lambda: self.start("launch"))
         self.stop = ttk.Button(bar, text="Stop", command=self.terminate, state="disabled")
-        for button in (self.inspect, self.launch, self.stop):
+        for button in (self.inspect, self.check, self.launch, self.stop):
             button.pack(side="left", padx=(0, 6))
         self.status = tk.StringVar(value="Ready. WARP uses the CPU to render graphics.")
         ttk.Label(frame, textvariable=self.status).grid(row=4, columnspan=2, sticky="w", pady=(0, 5))
@@ -140,11 +143,12 @@ class Launcher:
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
-        for control in (self.entry, self.browse, self.inspect, self.launch):
+        for control in (self.entry, self.browse, self.inspect, self.check, self.launch):
             control.configure(state="disabled")
         self.open_log.configure(state="normal")
         self.stop.configure(state="normal")
-        self.status.set("Inspecting executable..." if action == "inspect" else "Running title with WARP...")
+        self.status.set({"inspect": "Inspecting executable...", "check": "Checking title imports...",
+                         "launch": "Running title with WARP..."}[action])
         self.poll()
 
     def poll(self):
@@ -167,7 +171,7 @@ class Launcher:
         self.status.set("Stopped." if self.stopping else f"Runtime exited with code {code}.")
         self.stopping = False
         self.stop.configure(state="disabled")
-        for control in (self.entry, self.browse, self.inspect, self.launch):
+        for control in (self.entry, self.browse, self.inspect, self.check, self.launch):
             control.configure(state="normal")
 
     def show_log(self):
