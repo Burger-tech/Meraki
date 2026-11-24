@@ -43,6 +43,8 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 
 ### World rendering investigation
 
+- Updated the VIctory pin from `d2a4bae` to `ffe310e`. Both runtime profiles built and all 113 Meraki tests passed. The fetched README reports 30 FPS in menus and a dark scene after the first-mission title card. The update includes descriptor heap replay, CPU-written texture upload fixes, and per-lane descriptor shader lowering. Offline shader coverage comparison is underway. Updated mission visuals and frame rate still need local verification.
+
 - Live WARP results: the prewarmed PR #254 run reported 26 hits and two misses and still lost the device at mission entry. The PR #32 timing probe attributed about 96% of loading frame time to GPU wait. The removal probe first detected `0x887A0005` before submission at frame 1593, after the prior Present. This locates detection, while the triggering operation remains unknown. All test processes exited.
 - With monitors off, desktop captures were stale, but VIctory captured frames and accepted focused input. The presentation resolution fell from 4K to 1080p, so those timing samples require a separate comparison. A bounded RX 7800 XT test is assigned to check mission entry on an adapter that supports the fixed compute wave sizes.
 
