@@ -32,9 +32,13 @@ python Meraki.pyw
 
 The build installs the pinned Rust toolchain under .local and produces baseline/target/diag/victory.exe. To build the release executable as well, pass `-Profile both`.
 
-The launcher searches D:\ and its immediate subfolders for the package manifest. Use **Browse** to select a title elsewhere. **Inspect** checks the archive headers and shows executable information. **Check imports** prepares the executable and lists resolved and missing imports for each module without starting the title. **Launch with WARP** runs the diagnostic build on Microsoft's CPU-based Direct3D adapter. This can be slow. Upstream reports that world rendering on a hardware GPU can reset the display driver.
+The launcher is a Tk desktop application. The package card shows the full executable path, package folder, manifest state and one badge per archive. The status band shows the active action and session clock, and follows the latest frame or FPS line during a WARP launch. The diagnostics column shows the runtime build, session log and capture folder with buttons to open each. Live output is colour-coded for errors, warnings and frame progress.
 
-With the game window focused and no controller connected, Enter acts as A, Backspace as B, the arrow keys as the D-pad and WASD as the left stick. **Stop** ends the running process. **Open full log** opens the selected session's output. Session logs, caches and saves live under .local.
+The launcher searches D:\ and its immediate subfolders for the package manifest. Use **Browse** to select a title elsewhere, or **Folder** to open the selected package. **Inspect** checks the archive headers and shows executable information. **Check imports** prepares the executable and lists resolved and missing imports for each module without starting the title. **Launch with WARP** runs the diagnostic build on Microsoft's CPU-based Direct3D adapter. This can be slow. Upstream reports that world rendering on a hardware GPU can reset the display driver.
+
+With the game window focused and no controller connected, Enter acts as A, Backspace as B, the arrow keys as the D-pad and WASD as the left stick. **Stop** first asks the title window to close, then terminates it after a five-second grace period. **Open full log** and **Open frames** open the selected session's output and capture folder. Session logs, caches and saves live under .local.
+
+Shortcuts: Ctrl+O opens the package picker, F5 starts a WARP launch, Esc stops a running session and Ctrl+Shift+C copies the live output.
 
 ## Diagnose a dark scene
 

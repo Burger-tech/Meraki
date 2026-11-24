@@ -1,5 +1,8 @@
 # Meraki progress
 
+- Polished the Windows launcher UI while preserving package discovery, Inspect, Check imports, WARP launch, opt-in diagnostic frames, live logs and graceful Stop. The package card now shows the full executable path, package folder, manifest state and archive badges. The status band tracks the active action, session clock and latest runtime frame/FPS line. The diagnostics column shows the runtime build, session log and capture folder with open buttons, and live output highlights errors, warnings and progress. Added 11 launcher unit tests and 6 withdrawn-root Tk UI tests; all 113 tests pass. No live game run was performed.
+- Evaluated native C++ Win32 against Tk for the launcher. Meraki retains Tk: no MSVC toolchain is present in the workspace, and a native rewrite would duplicate the tested process, log and Stop paths without an equivalent UI verification harness. Tk keeps feature parity and remains covered by the Python regression suite plus real widget construction tests under .local.
+
 - Completed the [upstream comparison](docs/upstream-comparison.md) for XCL `e50836b`, VIctory `d2a4bae`, and the local read-only Leonida checkout `aa2988c`. XCL built in debug and listed 745 test entries. XCL game execution and runtime integration remain unverified. The first controlled experiment compares cold and warm shader and pipeline caches on the same package and scene.
 
 ### Live gameplay acceptance

@@ -373,6 +373,8 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertEqual(stub.log_path, log)
         self.assertFalse(log.with_suffix("").exists())
         self.assertFalse(log.read_bytes().startswith(b"Diagnostic frames:"))
+        self.assertIsNone(stub.frames_path)
+        self.assertIsNotNone(stub.started_at)
 
     def test_capture_on_creates_frame_folder_and_sets_environment(self):
         stub, calls, errors, local, logs = self._run(
@@ -393,6 +395,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
             f"Diagnostic frames: {frames}",
         )
         self.assertEqual(set(logs.iterdir()), {log, frames})
+        self.assertEqual(stub.frames_path, frames)
 
     def test_capture_is_only_applied_to_launch(self):
         stub, calls, errors, local, logs = self._run(
@@ -410,6 +413,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertNotIn("VICTORY_CAPTURE", calls[0]["env"])
         log = stub.log_path
         self.assertFalse(log.with_suffix("").exists())
+        self.assertIsNone(stub.frames_path)
 
     def test_start_reports_a_missing_runtime_without_spawning(self):
         stub, calls, errors, local, logs = self._run(
@@ -752,6 +756,141 @@ class WindowApiTests(unittest.TestCase):
             self.assertTrue(meraki.post_system_close(0x55))
 
         self.assertEqual(calls, [(0x55, meraki.WM_SYSCOMMAND, meraki.SC_CLOSE, 0)])
+
+
+class ArchiveStatusTests(ScratchMixin, unittest.TestCase):
+    def test_reports_each_archive_state(self):
+        package, _ = self.make_package()
+        (package / "common.rpf").write_bytes(b"9FPRpayload")
+        (package / "levels.rpf").write_bytes(b"9FP")
+        (package / "audio.rpf").mkdir()
+
+        rows = meraki.archive_status(package)
+
+        self.assertEqual([name for name, _state, _detail in rows],
+                         ["common.rpf", "levels.rpf", "audio.rpf"])
+        self.assertEqual(rows[0], ("common.rpf", "ok", "RPF9 header detected"))
+        self.assertEqual(rows[1], ("levels.rpf", "unknown", "Unrecognized header"))
+        self.assertEqual(rows[2][0:2], ("audio.rpf", "error"))
+
+
+class RuntimeStateTests(ScratchMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.target = self.temp / "target"
+        (self.target / "diag").mkdir(parents=True)
+        (self.target / "release").mkdir(parents=True)
+
+    def test_reports_missing_diagnostic_and_release_builds(self):
+        with mock.patch.object(meraki, "TARGET", self.target):
+            self.assertEqual(meraki.runtime_state(), ("missing", "Not built"))
+
+            release = self.target / "release" / "victory.exe"
+            release.write_bytes(b"MZ")
+            self.assertEqual(meraki.runtime_state(), ("release", "Release only"))
+
+            diag = self.target / "diag" / "victory.exe"
+            diag.write_bytes(b"MZ")
+            self.assertEqual(meraki.runtime_state(), ("diag", "Diagnostics ready"))
+
+
+class StatusDescriptionTests(unittest.TestCase):
+    def test_frame_line_becomes_a_rendering_status(self):
+        detail, tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:45Z  INFO victory_gpu::queue: frame presented frame=64\n")
+
+        self.assertEqual(detail, "Rendering  \u00b7  frame 64")
+        self.assertEqual(tone, "running")
+
+    def test_fps_line_reports_frame_pacing(self):
+        detail, tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:51Z  INFO victory_gpu::host: 15.5 fps, 64.6 ms/frame "
+            "(39.3 on the GPU), 3 draws/frame\n")
+
+        self.assertEqual(detail, "15.5 FPS  \u00b7  64.6 ms/frame")
+        self.assertEqual(tone, "running")
+
+    def test_error_line_strips_the_timestamp_and_chooses_the_error_tone(self):
+        detail, tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:45Z  ERROR victory_gpu::host: device lost\n")
+
+        self.assertEqual(detail, "device lost")
+        self.assertEqual(tone, "error")
+
+    def test_import_and_presentation_lines_are_summarised(self):
+        detail, _tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:44Z  INFO victory_loader::windows: imports bound "
+            "hle=88 host=427 missing=0\n")
+        self.assertEqual(detail, "Imports bound  \u00b7  0 missing")
+
+        detail, _tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:45Z  INFO victory_gpu::host: presenting to a window "
+            "width=3840 height=2160 format=28\n")
+        self.assertEqual(detail, "Presenting  \u00b7  3840x2160")
+
+    def test_warning_is_shown_without_switching_the_band_to_running(self):
+        detail, tone = meraki.describe_log_chunk(
+            "2026-11-24T06:58:46Z  WARN victory_gpu::queue: levels after the black frame\n")
+
+        self.assertEqual(detail, "levels after the black frame")
+        self.assertIsNone(tone)
+
+    def test_long_detail_is_truncated(self):
+        detail, _tone = meraki.describe_log_chunk("x" * 400 + "\n")
+
+        self.assertEqual(len(detail), 160)
+        self.assertTrue(detail.endswith("..."))
+
+    def test_log_line_tags_mark_errors_warnings_and_progress(self):
+        self.assertEqual(meraki._line_tag("2026-01-01T00:00:00Z  ERROR x: bad"), "error")
+        self.assertEqual(meraki._line_tag("2026-01-01T00:00:00Z  WARN x: careful"), "warn")
+        self.assertEqual(meraki._line_tag("2026-01-01T00:00:00Z  INFO x: frame presented"), "ok")
+
+
+class _Widget:
+    def __init__(self):
+        self.options = {}
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
+
+
+class StatusHelperTests(unittest.TestCase):
+    def test_set_status_updates_the_text_detail_and_colours(self):
+        stub = types.SimpleNamespace(
+            status=_Variable("Ready."),
+            detail=_Variable(""),
+            status_panel=_Widget(),
+            status_title=_Widget(),
+            status_detail_label=_Widget(),
+            status_clock_label=_Widget(),
+            status_accent=_Widget(),
+        )
+
+        meraki._set_status(stub, "Running title with WARP...", "Rendering  \u00b7  frame 64", "running")
+
+        self.assertEqual(stub.status.get(), "Running title with WARP...")
+        self.assertEqual(stub.detail.get(), "Rendering  \u00b7  frame 64")
+        self.assertEqual(stub.status_panel.options["bg"], meraki.STATUS_TONES["running"]["bg"])
+        self.assertEqual(stub.status_title.options["fg"], meraki.STATUS_TONES["running"]["fg"])
+        self.assertEqual(stub.status_accent.options["bg"], meraki.STATUS_TONES["running"]["accent"])
+
+    def test_controls_are_disabled_and_reenabled_together(self):
+        stub = types.SimpleNamespace(
+            entry=_Control(), browse=_Control(), inspect=_Control(), check=_Control(),
+            launch=_Control(), capture_toggle=_Control())
+
+        meraki._set_controls(stub, False)
+        for control in (stub.entry, stub.browse, stub.inspect, stub.check,
+                        stub.launch, stub.capture_toggle):
+            self.assertEqual(control.states, ["disabled"])
+
+        meraki._set_controls(stub, True)
+        for control in (stub.entry, stub.browse, stub.inspect, stub.check,
+                        stub.launch, stub.capture_toggle):
+            self.assertEqual(control.states, ["disabled", "normal"])
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
