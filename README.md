@@ -4,6 +4,8 @@ Meraki launches a locally installed Xbox Series title on Windows 11 using a pinn
 
 ## Build and launch
 
+Meraki uses [VIctory](https://github.com/Marvisak/VIctory) as its runnable Windows baseline. Compatibility work also compares [XCL](https://github.com/ivall/xcl) for Direct3D 12 and shader translation behavior, and [Leonida](https://github.com/ItsNotRexed/Leonida) for package analysis and its independent graphics implementation. Compare changes against the same package and test scene before integrating them.
+
 Use Windows x64, Visual Studio C++ Build Tools with the Windows SDK, Rustup on PATH and Python 3 with Tk. From the Meraki checkout, run these commands in PowerShell.
 
 ```powershell

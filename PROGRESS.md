@@ -1,6 +1,10 @@
 # Meraki progress
 
+- Added XCL to the upstream comparison alongside VIctory and Leonida. Reference revisions for the comparison are XCL `e50836b`, VIctory `d2a4bae`, and the local read-only Leonida checkout `aa2988c`. DeepSeek is checking build and licensing details and identifying a first controlled comparison. No runtime integration has been verified.
+
 ### Live gameplay acceptance
+
+- Three DeepSeek workers were assigned the visible WARP run, per-frame measurement tooling, and rendering performance analysis. One worker owns desktop input and game shutdown. Results are pending.
 
 - Run interactive gameplay tests with the game window visible on the Windows desktop. Announce each live run before launch, share milestones during the run, and close the game afterward. Use the launcher to keep the live log available.
 - The performance target is sustained 60 FPS during player-controlled gameplay, with a 16.67 ms frame budget. Verify camera and movement in a visibly rendered scene before measuring. Record the renderer, resolution, duration, and frame pacing. Use WARP to diagnose rendering and use hardware results to evaluate the performance target. Upstream reports hardware GPU resets on world entry, so establish a controlled hardware test after the mission renders.
