@@ -356,6 +356,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertEqual(len(calls), 1)
         env = calls[0]["env"]
         self.assertNotIn("VICTORY_CAPTURE", env)
+        self.assertNotIn("VICTORY_LOG", env)
         self.assertNotIn("VICTORY_UNRELATED", env)
         self.assertEqual(env["VICTORY_GAME_DIR"], str(self.exe.parent))
         self.assertEqual(env["MERAKI_TEST_SENTINEL"], "kept")
@@ -389,6 +390,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         frames = log.with_suffix("")
 
         self.assertEqual(env["VICTORY_CAPTURE"], str(frames))
+        self.assertEqual(env["VICTORY_LOG"], "info,victory_gpu::frame=debug")
         self.assertTrue(frames.is_dir())
         self.assertEqual(
             log.read_text(encoding="utf-8").splitlines()[0],
@@ -411,6 +413,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
             [str(self.target / "release" / "victory.exe"), "run", str(self.exe)],
         )
         self.assertNotIn("VICTORY_CAPTURE", calls[0]["env"])
+        self.assertNotIn("VICTORY_LOG", calls[0]["env"])
         log = stub.log_path
         self.assertFalse(log.with_suffix("").exists())
         self.assertIsNone(stub.frames_path)

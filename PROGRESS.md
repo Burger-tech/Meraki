@@ -7,6 +7,11 @@
 
 ### Live gameplay acceptance
 
+- Launcher capture now records per-frame host Present events alongside screenshots for the frame-pacing tool. The full 113-test suite passed after the change. Following the unrelated PC restart, no game process or completed new hardware result was found.
+
+- Keep one visible game instance and one desktop test owner. Prepare the next candidate while the current run is active. Start the next comparison after verifying that the prior process exited. Let loading and shader compilation continue while logs or frames show progress.
+- Capture the mission card, first rendered world frame or sustained black screen, and any failure. Keep timing logs running between captures. For each retry, record the build, cache state, scene, and single change under test. Confirm camera and movement before using a run to assess the 30 FPS target.
+
 - The Navigation Experience input audit found that the prior 80 ms Continue presses were shorter than the roughly 100 ms setup frames, with foreground focus unverified for those presses. Later runs advanced the same screen to UI Text Size. Live tests now verify focus, hold Continue for 400–500 ms, and confirm the expected screen after release.
 
 - The visible DeepSeek WARP test advanced from the account picker to Navigation Experience after focused Right and Enter input. Two focused Continue attempts left that screen unchanged. The account picker averaged 14.86 FPS and setup averaged 10.28 FPS. The worker requested Windows system close and verified that the process exited. This second run took 7 minutes 12 seconds, exceeding the five-minute test cap. Player-controlled gameplay and the 60 FPS hardware target remain unverified. Local report: `.local/live-gameplay/REPORT-20261123.md`.
@@ -38,6 +43,28 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 
 ### World rendering investigation
 
+- Live WARP results: the prewarmed PR #254 run reported 26 hits and two misses and still lost the device at mission entry. The PR #32 timing probe attributed about 96% of loading frame time to GPU wait. The removal probe first detected `0x887A0005` before submission at frame 1593, after the prior Present. This locates detection, while the triggering operation remains unknown. All test processes exited.
+- With monitors off, desktop captures were stale, but VIctory captured frames and accepted focused input. The presentation resolution fell from 4K to 1080p, so those timing samples require a separate comparison. A bounded RX 7800 XT test is assigned to check mission entry on an adapter that supports the fixed compute wave sizes.
+
+- Headless tests isolated the pre-removal WARP compute pipeline refusals to fixed wave-size requirements. WARP reports 4 lanes and rejects shaders requiring 32 or 64. The RX 7800 XT reports 32–64 lanes and accepted all 299 tested compute pipelines, including 118 with fixed wave sizes. WARP remains useful for diagnostics but cannot verify full mission rendering on this host. Device removal is a separate unresolved failure.
+
+- The isolated PR #32 removal probe built and passed both focused tests. It records the first failed check before a submission or around Present, including the numeric HRESULT, frame, and submission. It is queued for a separate WARP run if device removal persists after the prewarmed-cache comparison.
+
+- A headless C++ WARP harness passed four aligned texture-copy and readback cases in three consecutive runs, including a correctly sized mip-1 copy. Fences completed and all active bytes matched. The test covers the basic D3D12 transfer path. The mission failure still needs a trace that identifies the first device-removal result around Present and submission.
+
+- Across six runs, the shader audit found 491 translation failures in 3,911 attempts, including 302 compute failures. A separate 352 pre-removal compute pipeline refusals returned `E_INVALIDARG` after translation had succeeded. The synthetic translator fixture passed four cases and does not reproduce host pipeline failures or device removal. A focused host pipeline investigation is assigned.
+
+- VIctory PR #254 `0e6b2b4` built in diagnostics and passed 12 focused cache tests. Offline translation wrote 22,156 nonempty cache entries in about 287 seconds. The prewarmed candidate is queued for a visible WARP comparison after the frame-time probe exits.
+
+- The opt-in PR #32 frame-time probe built and passed 55 focused GPU tests with one ignored. It separates preparation, GPU wait, copy-back, and residual time. A visible WARP run was assigned to validate the probe at mission entry. Existing mission-loading samples measured 1.29–3.06 presents per second and still ended in device removal. These samples do not measure gameplay.
+
+- Four DeepSeek workstreams are assigned: diagnose the last texture-copy submission, build the shader-cache candidate, rank mission shader failures, and prepare performance instrumentation or a focused optimization. Compare one runtime change at a time. After the mission renders, test player control and fix visible rendering defects before measuring sustained 30 FPS.
+
+- The warm-cache WARP run reached Lucia's mission loading card and then went black. It logged descriptor exhaustion (104 slots requested), a 1,242 ms submission with 32 lists, and GPU device removal. The mission-loading window measured 3.25 observed presents per second with a 932.7 ms p95 interval. Player control was never visible. The next run compares the isolated queue-ordering candidate against this failure sequence. Local evidence: `.local/live-gameplay/session-20261124-0030-warm`.
+
+- Public VIctory main matched Meraki's pin when checked on November 24. Open [VIctory PR #32](https://github.com/Marvisak/VIctory/pull/32) implements cross-queue waits. Its exact head `8fd82c9` built in diagnostics with zero warnings. Focused GPU tests passed with 55 tests in the default configuration and 57 with diagnostics, with one ignored in each. The binary is available for a separate WARP test under `.local/victory-pr32/target/diag`. Open PRs #254 and #275 address shader-cache and pipeline compilation stalls and can be evaluated separately.
+- A local diagnostic log recorded a 672 ms host submission followed by GPU device removal, along with shader translation and pipeline failures. The trace lacks queue-wait telemetry, so it cannot establish whether the ordering patch addresses that failure. Verify the scene and repeat the test with matched settings and separate cache roots.
+
 - VIctory developers reported two separate failure modes at first-mission entry. Cold shader compilation can stall rendering long enough for the title to close. Once shaders are cached, a GPU ordering problem can still leave rendering passes reading data before it was written, producing a black screen or crash. Upstream reported a fix in progress. Both findings still need local reproduction against Meraki's pinned revision.
 - Preserve the shader cache between matched runs. Compare cold and warm runs using separate workspace cache directories, and correlate compile activity with presentation gaps and exit timing. If the warm run remains dark, capture the affected frames and examine GPU submission ordering and missing writes alongside pipeline counters. Compare any upstream fix against the current pin on the same build and scene.
 
@@ -52,3 +79,9 @@ A community report describes intro audio continuing over a black screen. VIctory
 - Started a fresh WARP test with the launcher's persistent data folder and captured the first 128 presented frames. Session evidence is in `.local/gameplay-20261123-212748`. After onboarding, test camera input from a stationary position, then forward movement and release. Check the character's position against a fixed landmark before and after input so cutscene motion cannot be mistaken for player control.
 - Tested menu input from Navigation Experience through UI Text Size, Finish Setup, copyright and photosensitivity notices. Reached the privacy and terms checkboxes with Confirm disabled. Closed the game and verified process exit. Both builds and the software-adapter probe passed independent validation.
 - Integrated the delegated runtime log summary and verified identical frame interval totals on UTF-8 and UTF-16 copies of the local boot log. The report distinguishes rounded host samples from frame interval counters.
+
+### Live WARP mission attempts (2026-11-24, test sub-agent)
+
+- Baseline b99f876 warm-cache retry and PR32 17655DC5 both reached the mission-entry black scene and lost the device (0x887A0004/5) within seconds. Removals: baseline 07:36:48, PR32 07:46:26. PR32 cut pipeline refusals 107->21 and removed the n=104 descriptor exhaustion, but did not fix the removal.
+- DRED on PR #32 listed buffer-to-texture copies in the last attempted submission. Earlier resource creation calls already returned device removed, following first-chance exceptions in WARP. This places the observed failure before the listed submission. The initiating operation remains unidentified. A headless WARP copy and readback test is assigned to validate the basic transfer path independently.
+- No terms screen appeared and no terms were accepted. Player controls remain unverified because no visible playable frame was rendered. Report: .local/live-gameplay/REPORT-20261124.md

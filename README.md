@@ -44,7 +44,7 @@ Shortcuts: Ctrl+O opens the package picker, F5 starts a WARP launch, Esc stops a
 
 For a diagnostics run with `VICTORY_LOG=info,victory_gpu::frame=debug`, summarize the logged host present calls with `python tools/frame_pacing.py LOG`. VIctory logs after calling Present without checking its result, so the report measures host call cadence. Confirm visible gameplay separately.
 
-Select **Save diagnostic frames on launch**, then **Launch with WARP**. Each captured run gets a folder beside its log under `.local/logs`. The folder and log share the same session name. VIctory saves presented frames 1, 2, 4, 8 and subsequent powers of two.
+Select **Capture frames and timing on launch**, then **Launch with WARP**. Each captured run gets a folder beside its log under `.local/logs`. The folder and log share the same session name. VIctory saves presented frames 1, 2, 4, 8 and subsequent powers of two, and logs individual host present calls for the frame-pacing tool.
 
 To investigate a transition, find the last visible scene and first dark scene in that sequence. Look up the corresponding `frame presented` lines in the session log. Each line counts draws and dispatches since the previous logged frame. The separate `victory_gpu::host` lines periodically sample FPS, draws per frame and draws dropped for lack of a pipeline. A displayed zero is rounded. Capture timing and software-rendering performance can differ from a normal run.
 

@@ -573,7 +573,7 @@ class Launcher:
                                 command=lambda: self.start("check"))
         self.check.pack(side="left")
         self.capture_toggle = ttk.Checkbutton(
-            actions, text="Save diagnostic frames on launch", variable=self.capture,
+            actions, text="Capture frames and timing on launch", variable=self.capture,
             style="Card.TCheckbutton")
         self.capture_toggle.pack(side="left", padx=(17, 0))
         self.launch = ttk.Button(actions, text="Launch with WARP", style="Accent.TButton",
@@ -774,6 +774,7 @@ class Launcher:
                     frames.mkdir()
                     self.frames_path = frames
                     env["VICTORY_CAPTURE"] = str(frames)
+                    env["VICTORY_LOG"] = "info,victory_gpu::frame=debug"
                     sink.write(f"Diagnostic frames: {frames}\n".encode("utf-8"))
                     sink.flush()
                 if action == "inspect":
