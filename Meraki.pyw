@@ -91,6 +91,10 @@ class Launcher:
         self.stop = ttk.Button(bar, text="Stop", command=self.terminate, state="disabled")
         for button in (self.inspect, self.check, self.launch, self.stop):
             button.pack(side="left", padx=(0, 6))
+        self.capture = tk.BooleanVar(value=False)
+        self.capture_toggle = ttk.Checkbutton(frame, text="Save diagnostic frames on launch",
+                                              variable=self.capture)
+        self.capture_toggle.grid(row=6, column=0, sticky="w", pady=(8, 0))
         self.status = tk.StringVar(value="Ready. WARP uses the CPU to render graphics.")
         ttk.Label(frame, textvariable=self.status).grid(row=4, columnspan=2, sticky="w", pady=(0, 5))
         console = ttk.Frame(frame)
@@ -101,7 +105,7 @@ class Launcher:
         scroll.pack(side="right", fill="y")
         self.output.pack(fill="both", expand=True)
         self.open_log = ttk.Button(frame, text="Open full log", command=self.show_log, state="disabled")
-        self.open_log.grid(row=6, columnspan=2, sticky="e", pady=(8, 0))
+        self.open_log.grid(row=6, column=1, sticky="e", pady=(8, 0))
 
     def choose(self):
         exe = filedialog.askopenfilename(filetypes=[("Title executable", "*.exe")])
@@ -125,6 +129,12 @@ class Launcher:
                        TMP=str(temp), TEMP=str(temp), NO_COLOR="1")
             path = LOGS / f"{action}-{datetime.now():%Y%m%d-%H%M%S-%f}.log"
             with path.open("xb") as sink:
+                if action == "launch" and self.capture.get():
+                    frames = path.with_suffix("")
+                    frames.mkdir()
+                    env["VICTORY_CAPTURE"] = str(frames)
+                    sink.write(f"Diagnostic frames: {frames}\n".encode("utf-8"))
+                    sink.flush()
                 if action == "inspect":
                     sink.write(archive_report(exe.parent).encode("utf-8"))
                     sink.flush()
@@ -143,7 +153,7 @@ class Launcher:
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
-        for control in (self.entry, self.browse, self.inspect, self.check, self.launch):
+        for control in (self.entry, self.browse, self.inspect, self.check, self.launch, self.capture_toggle):
             control.configure(state="disabled")
         self.open_log.configure(state="normal")
         self.stop.configure(state="normal")
@@ -171,7 +181,7 @@ class Launcher:
         self.status.set("Stopped." if self.stopping else f"Runtime exited with code {code}.")
         self.stopping = False
         self.stop.configure(state="disabled")
-        for control in (self.entry, self.browse, self.inspect, self.check, self.launch):
+        for control in (self.entry, self.browse, self.inspect, self.check, self.launch, self.capture_toggle):
             control.configure(state="normal")
 
     def show_log(self):
