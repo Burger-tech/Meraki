@@ -9,7 +9,7 @@
 
 - Hardware is now the default in the launcher and live-test briefs. WARP remains an explicit diagnostic option. The launcher suite passed all 114 tests. The live tester will use the title's native pacing and prioritize working first-mission graphics and controls.
 
-- The isolated timed-capture candidate built in diagnostics and release. GPU diagnostics tests passed (59 passed, one ignored). With `VICTORY_CAPTURE_TIMED=1`, it captures the first eligible rendered frame at or after each 2.5-second interval, records the actual gap, and caps saved frames. The live tester has the binary. Live cadence and performance overhead remain unverified.
+- The isolated timed-capture candidate built in diagnostics and release. GPU diagnostics tests passed (59 passed, one ignored). With `VICTORY_CAPTURE_TIMED=1`, it captures the first eligible rendered frame at or after each 2.5-second interval, records the actual gap, and caps saved frames. The live tester has the binary. A live WARP run saved 120 timed images with a 2.57-second median and 3.27-second maximum gap. Capture overhead remains unverified.
 
 - Launcher capture now records per-frame host Present events alongside screenshots for the frame-pacing tool. The full 113-test suite passed after the change. Following the unrelated PC restart, no game process or completed new hardware result was found.
 
@@ -99,3 +99,5 @@ A community report describes intro audio continuing over a black screen. VIctory
 - Baseline b99f876 warm-cache retry and PR32 17655DC5 both reached the mission-entry black scene and lost the device (0x887A0004/5) within seconds. Removals: baseline 07:36:48, PR32 07:46:26. PR32 cut pipeline refusals 107->21 and removed the n=104 descriptor exhaustion, but did not fix the removal.
 - DRED on PR #32 listed buffer-to-texture copies in the last attempted submission. Earlier resource creation calls already returned device removed, following first-chance exceptions in WARP. This places the observed failure before the listed submission. The initiating operation remains unidentified. A headless WARP copy and readback test is assigned to validate the basic transfer path independently.
 - No terms screen appeared and no terms were accepted. Player controls remain unverified because no visible playable frame was rendered. Report: .local/live-gameplay/REPORT-20261124.md
+
+- Test sub-agent hardware arm (2026-11-24): single visible RX 7800 XT run on timed-capture ffe310e diag ran menus at a 33.3 ms median and reached the Vice City, Two Years Ago title card, then went black from frame 5780 with one flat-navy artifact frame and growing 3.5-5.4 s present gaps. Host device removed at 10:53:02 after a 30-list submission: page fault in freed 2048x2048 texture f72 (type 34). No mission geometry or player control; no terms accepted. Process exited, no repeat. Evidence: .local/hardware-60/REPORT-20261124-gpu.md.
