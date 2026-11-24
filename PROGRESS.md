@@ -4,6 +4,8 @@
 
 ### Live gameplay acceptance
 
+- The Navigation Experience input audit found that the prior 80 ms Continue presses were shorter than the roughly 100 ms setup frames, with foreground focus unverified for those presses. Later runs advanced the same screen to UI Text Size. Live tests now verify focus, hold Continue for 400–500 ms, and confirm the expected screen after release.
+
 - The visible DeepSeek WARP test advanced from the account picker to Navigation Experience after focused Right and Enter input. Two focused Continue attempts left that screen unchanged. The account picker averaged 14.86 FPS and setup averaged 10.28 FPS. The worker requested Windows system close and verified that the process exited. This second run took 7 minutes 12 seconds, exceeding the five-minute test cap. Player-controlled gameplay and the 60 FPS hardware target remain unverified. Local report: `.local/live-gameplay/REPORT-20261123.md`.
 - Across seven local logs, all 28 frame-interval requests from the title were 33.333 ms during startup and onboarding. VIctory honors the requested interval and calls Direct3D Present with sync interval zero. The measured menu cadence is therefore separate from host vsync.
 - In those WARP sessions, GPU wait accounted for 72–87% of median frame time at 4K. This identifies a menu bottleneck. First-mission GPU cost remains unverified.
