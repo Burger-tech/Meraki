@@ -43,6 +43,12 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 
 ### World rendering investigation
 
+- On the same shader archive, offline DXIL emissions fell from 22,156 at `d2a4bae` to 21,886 at `ffe310e`. Compute fell from 1,693 to 1,441. Resource tracking reached 234 more programs, while more programs then failed emission. The new test executable matches the freshly built diagnostics binary by SHA-256. This census omitted DXIL validation and pipeline creation. DeepSeek is investigating which previously emitted shaders were lost.
+
+- The older PR #32 hardware probe lost the RX 7800 XT with `0x887A0006` during a staging-texture upload after token 1708. DRED recorded a page fault and breadcrumbs stopped at command 14 of 1,319. No Windows display-reset event or dump was found. Menus and intro averaged 26.55 presents per second in the first minute, with 33.84 ms p95. No playable world appeared. The driver changed after the reboot, and a bounded run on `ffe310e` is assigned. This comparison changes both runtime and driver.
+
+- Sol's source review identified four changes to watch in the next mission trace: `3c81420` drops work when fresh descriptor tables cannot be allocated, `e8d3b64` increases the dynamic descriptor range where supported, `a4e7f1d` initializes pending descriptors before publishing the heap, and `cbb50b8` corrects the dimension of null UAVs. Check whether descriptor exhaustion still precedes device removal and capture the first in-world frame.
+
 - Updated the VIctory pin from `d2a4bae` to `ffe310e`. Both runtime profiles built and all 113 Meraki tests passed. The fetched README reports 30 FPS in menus and a dark scene after the first-mission title card. The update includes descriptor heap replay, CPU-written texture upload fixes, and per-lane descriptor shader lowering. Offline shader coverage comparison is underway. Updated mission visuals and frame rate still need local verification.
 
 - Live WARP results: the prewarmed PR #254 run reported 26 hits and two misses and still lost the device at mission entry. The PR #32 timing probe attributed about 96% of loading frame time to GPU wait. The removal probe first detected `0x887A0005` before submission at frame 1593, after the prior Present. This locates detection, while the triggering operation remains unknown. All test processes exited.
