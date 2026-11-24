@@ -1,5 +1,7 @@
 # Meraki progress
 
+DeepSeek implemented 11 launcher regression tests covering runtime routing, archive headers, and opt-in captures. All passed with python -B -m unittest discover -s tests -v. The runtime log accuracy audit is pending.
+
 ## November 23, 2026
 
 - Integrated VIctory at d2a4bae1f49533ef5cb512fd1b1ba1513f2e1989 as a submodule. Build.ps1 builds from the Meraki root.

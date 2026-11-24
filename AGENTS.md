@@ -40,7 +40,9 @@ D:\\  ## This drive has the GTA 6 files from an xbox build that you will be gett
 
 \- All subagents must follow these same restrictions.
 
-\- Use up to two concurrent subagents.
+\- Delegate most implementation, compilation, testing, and research to up to four concurrent DeepSeek workers through T3 Code. Use DeepInfra with `deepseek-ai/DeepSeek-V4.1-Flash-1017`.
+
+\- Sol leads architecture, difficult debugging, review, and integration. Assign distinct ownership to workers and use isolated Git worktrees when edits overlap.
 
 \- Maintain PROGRESS.md within C:\\Meraki.
 
