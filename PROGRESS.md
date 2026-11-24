@@ -7,6 +7,10 @@
 
 ### Live gameplay acceptance
 
+- The 60 FPS study found 111 of 111 title interval requests at 33.333 ms across 23 logs. VIctory passes the requested interval through. In sampled hardware mission-transition frames, title-memory copies and copy-back dominated frame time. The synthetic timing model does not establish how the title's simulation would respond to a faster clock. Keep native pacing while validating the first mission at 15–30 FPS.
+
+- A direct hardware capture smoke test saved five startup images at a 2.506-second median gap. The final image showed the account-picker prompts over a dark menu background. The run ended with exit code 0 after a Windows system-close request. This short run did not advance into the mission. Local evidence: `.local/sol-capture-20261124-112128`.
+
 - Hardware is now the default in the launcher and live-test briefs. WARP remains an explicit diagnostic option. The launcher suite passed all 114 tests. The live tester will use the title's native pacing and prioritize working first-mission graphics and controls.
 
 - The isolated timed-capture candidate built in diagnostics and release. GPU diagnostics tests passed (59 passed, one ignored). With `VICTORY_CAPTURE_TIMED=1`, it captures the first eligible rendered frame at or after each 2.5-second interval, records the actual gap, and caps saved frames. The live tester has the binary. A live WARP run saved 120 timed images with a 2.57-second median and 3.27-second maximum gap. Capture overhead remains unverified.
@@ -46,6 +50,15 @@ The rendering-log audit reproduced misleading totals from truncated, missing, an
 - The first-run flow reached Rockstar Games Legal Terms & Policies. Terms of Service was unchecked and Confirm was disabled. Testing stopped there for the user to review the terms. Locally verified milestones currently end at onboarding.
 
 ### World rendering investigation
+
+- The compute lowerer investigation isolated all 253 previously emitted programs lost at `ffe310e` to `3dd467c`, which keeps values live through successive control-flow joins. The old output substituted zero where the title needed a descriptor word. Keep the liveness fix. Correct emission requires support for descriptor contents used as data. The synthetic probe recovered the counts by reverting liveness only as an experiment.
+
+- The fxceless fork at `578d459` built in diagnostics and passed 116 GPU tests and 184 shader tests, with three ignored. A visible RX 7800 XT run is assigned with native pacing and default runtime flags.
+- DRED matched both hardware fault addresses to recently freed textures, but the report does not expose their allocation base, sizes, or access type. The strongest lead is a descriptor slot being remade while an open submission still references its previous texture. The proposed regression records a table use, remakes the slot, and verifies the previous binding remains valid until the list retires.
+
+- A user-supplied screenshot from the [VIctory livestream](https://rumble.com/v7iuddk-gta-6-time.html) shows a lit dialogue scene with visible character and environment geometry beyond Meraki's black-frame checkpoint. Stream playback could not be verified here. The build, settings, and timestamp are unknown. Public VIctory main matched Meraki's `ffe310e` pin when checked. Use the image as a visual checkpoint for the fork comparison.
+
+- Added [fxceless/victory-gta6](https://github.com/fxceless/victory-gta6) as an isolated comparison candidate. The fork reports prologue geometry, HUD, and pad input at 2–3.5 FPS on an RTX 4070, with missing lighting in shadow. Its meshlet buffer views, descriptor handling, and texture synchronization changes are relevant to the local black scene. DeepSeek is building and reviewing the exact revision before a local hardware test.
 
 - The updated VIctory `ffe310e` diagnostic build reached the opening credits on the RX 7800 XT. The first 60 seconds averaged 28.94 presents per second. Credits averaged 0.45, and the run ended after token 3540 with `0x887A0006` and a DRED page fault. No mission geometry or player control was verified. This was a cold-cache run with a changed driver and concurrent offline translation. Evidence: `.local/upstream-hardware/REPORT.md`.
 
