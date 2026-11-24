@@ -1,6 +1,6 @@
 # Meraki
 
-Meraki is a Windows launcher and diagnostics harness for a locally installed Xbox Series X|S title. It uses the pinned [VIctory](https://github.com/Marvisak/VIctory) runtime, detects the title from `MicrosoftGame.Config`, checks `common.rpf`, `levels.rpf` and `audio.rpf`, and launches the diagnostic build on Microsoft's WARP software adapter.
+Meraki is a Windows launcher and diagnostics harness for a locally installed Xbox Series X|S title. It uses the pinned [VIctory](https://github.com/Marvisak/VIctory) runtime, detects the title from `MicrosoftGame.Config`, checks `common.rpf`, `levels.rpf` and `audio.rpf`, and launches the diagnostic build on the hardware GPU by default.
 
 Meraki contains no game data. The current build is not playable through the first mission. Menus and onboarding work, but recent WARP mission attempts reached the mission loading card, then went black and lost the D3D12 device. Mission rendering, player control and mission FPS are unverified.
 
@@ -33,7 +33,7 @@ git submodule update --init --recursive
 - Python 3 with Tcl/Tk. Tested with Python 3.13.14 and Tk 8.6. Use `python` in Windows commands.
 - Rustup on `PATH`. `Build.ps1` installs the pinned Rust 1.98.1 MSVC toolchain under `.local`, but it does not install Rustup itself.
 - Visual Studio 2022 C++ Build Tools and the Windows SDK (x64). The MSVC linker is required by the Rust target.
-- D3D12 with WARP available. The runtime's world gate requires shader model 6.6 and mesh shaders; WARP passed that capability check on the tested host. Hardware world entry is unverified.
+- A Direct3D 12 GPU. The runtime's world gate requires shader model 6.6 and mesh shaders; WARP passed that capability check on the tested host. Hardware world entry is unverified.
 - Several GiB of available Windows commit for the title. If the runtime reports Windows error 1455, close other applications or increase the paging file.
 
 ## Build
@@ -44,7 +44,7 @@ From the repository root:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Build.ps1
 ```
 
-The default build is the diagnostics profile and writes `baseline\target\diag\victory.exe`. This is the runtime used by **Launch with WARP**.
+The default build is the diagnostics profile and writes `baseline\target\diag\victory.exe`. This is the runtime used by **Launch**.
 
 Other profiles:
 
@@ -53,7 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build.ps1 -Profile release
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Build.ps1 -Profile both
 ```
 
-The release executable is `baseline\target\release\victory.exe`. A release-only build cannot be launched with WARP from the launcher; build the diagnostics profile for that action.
+The release executable is `baseline\target\release\victory.exe`. The launcher requires the diagnostics profile to launch the title.
 
 The launcher and tools need no third-party Python packages. Run the regression suite without game data:
 
@@ -77,7 +77,7 @@ The launcher auto-detects `D:\MicrosoftGame.Config` and one level below `D:\`. U
 
 The first-run legal terms and onboarding belong to the title. Complete them yourself; Meraki does not accept terms or automate consent.
 
-The supported setup path is the WARP diagnostic. Upstream reports that entering the world on a hardware GPU can hang the display and trigger a Windows display-driver reset.
+The launcher uses hardware rendering by default. Select **Use WARP** for software-rendering diagnostics. Upstream reports that entering the world on a hardware GPU can hang the display and trigger a Windows display-driver reset.
 
 ## Launch
 
@@ -91,13 +91,11 @@ Select the title executable, then use:
 
 - **Inspect** to read the package and archive headers.
 - **Check imports** to prepare the executable and list host, HLE and missing imports without starting the title.
-- **Launch with WARP** to run `baseline\target\diag\victory.exe run <exe> --execute` on the software adapter.
+- **Launch** to start the diagnostics executable on the GPU. **Use WARP** switches that run to the software adapter.
 - **Capture frames and timing on launch** to save diagnostic frames and per-present log lines. Capture is off by default.
 - **Stop** to request the title window's normal close, then force termination after five seconds.
 
 Session logs and captures are under `.local\logs`; cache and data are under `.local\cache` and `.local\data`. These paths are git-ignored.
-
-Meraki's launcher always uses WARP for launching. It is a diagnostic path, not evidence of hardware performance.
 
 ### Menu controls
 
@@ -123,7 +121,7 @@ Confirm the game window has keyboard focus before sending input.
 
 | Milestone | Status | Evidence or completion criteria |
 | --- | --- | --- |
-| Windows launcher and runtime builds | Verified | Diagnostic and release builds pass. The launcher detects the package, checks imports and launches with WARP. |
+| Windows launcher and runtime builds | Verified | Diagnostic and release builds pass. The launcher detects the package, checks imports and offers GPU and WARP rendering. |
 | Title startup and menu input | Verified | The title rendered the opening and reached first-run setup. Focused keyboard input advanced the account picker. |
 | First-mission gameplay | Pending | Complete onboarding, reach a rendered mission and verify camera rotation and movement against a fixed landmark. |
 | Frame-pacing measurement | Tool verified | Menu-only present-call pacing works. Live gameplay trace pending. |
@@ -142,7 +140,7 @@ Confirm the game window has keyboard focus before sending input.
 | `rustup` is not recognized | Install Rustup, reopen PowerShell, and confirm `%USERPROFILE%\.cargo\bin` is on `PATH`. |
 | Build fails looking for `link.exe`, MSVC or the Windows SDK | Install Visual Studio 2022 C++ Build Tools and the Windows SDK (x64), then reopen PowerShell. |
 | Launcher says `Runtime not built` | Run `.\Build.ps1` and confirm `baseline\target\diag\victory.exe` exists. |
-| Launcher says `Release build only` | Rebuild with the default diagnostics profile. A release-only build cannot launch with WARP. |
+| Launcher says `Release build only` | Rebuild with the default diagnostics profile. |
 | No package is detected or the executable is wrong | Use a package under `D:\` or one folder below it, or select the executable with **Browse**. It must be the manifest's executable. |
 | An RPF badge is missing or unrecognized | Put `common.rpf`, `levels.rpf` and `audio.rpf` beside the executable. The badge checks only the RPF9 header. |
 | `python Meraki.pyw` fails with `No module named tkinter` | Repair or reinstall Python with Tcl/Tk support. |

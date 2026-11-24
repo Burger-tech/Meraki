@@ -65,7 +65,8 @@ class LauncherUiTests(unittest.TestCase):
 
     def test_window_starts_ready_with_diagnostics_and_a_log_placeholder(self):
         self.assertEqual(self.root.title(), "Meraki")
-        self.assertEqual(self.app.status.get(), "Ready. WARP uses the CPU to render graphics.")
+        self.assertEqual(self.app.status.get(), "Ready. Hardware GPU is the default.")
+        self.assertFalse(self.app.warp.get())
         self.assertEqual(self.app.package_state_label.cget("text"), "No package")
         self.assertIn(
             self.app.runtime_state_label.cget("text"),

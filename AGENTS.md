@@ -48,5 +48,7 @@ D:\\  ## This drive has the GTA 6 files from an xbox build that you will be gett
 
 - Use `python` explicitly for Python commands in Windows shells and in delegated worker briefs.
 - Include the menu controls in every live-test brief. Enter activates the focused button, and W/A/S/D move selection like Tab. Verify the game has keyboard focus before sending input.
+- Use hardware rendering for live tests by default. Use WARP for software-specific diagnostics.
+- On each worker completion, review the evidence, record the result in PROGRESS.md, and start the next useful implementation or verification task. A ready visual-test candidate gets the next free desktop slot. Keep one live game instance and use offline work when there is no meaningful live retry.
 - Notify the user of major verified milestones and blockers through ntfy. Use PowerShell to POST a short message to `https://ntfy.sh/$env:NTFY_TOPIC` with title `Meraki` and priority `4`. Keep the topic value out of tracked files and logs.
 

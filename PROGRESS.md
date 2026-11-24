@@ -7,6 +7,10 @@
 
 ### Live gameplay acceptance
 
+- Hardware is now the default in the launcher and live-test briefs. WARP remains an explicit diagnostic option. The launcher suite passed all 114 tests. The live tester has been directed to try the title's performance mode on the RX 7800 XT if available and measure actual presentation cadence. Sustained 60 FPS remains unverified.
+
+- The isolated timed-capture candidate built in diagnostics and release. GPU diagnostics tests passed (59 passed, one ignored). With `VICTORY_CAPTURE_TIMED=1`, it captures the first eligible rendered frame at or after each 2.5-second interval, records the actual gap, and caps saved frames. The live tester has the binary. Live cadence and performance overhead remain unverified.
+
 - Launcher capture now records per-frame host Present events alongside screenshots for the frame-pacing tool. The full 113-test suite passed after the change. Following the unrelated PC restart, no game process or completed new hardware result was found.
 
 - Keep one visible game instance and one desktop test owner. Prepare the next candidate while the current run is active. Start the next comparison after verifying that the prior process exited. Let loading and shader compilation continue while logs or frames show progress.

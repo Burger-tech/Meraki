@@ -249,7 +249,7 @@ class _Process:
         return 0
 
 
-def _launcher_stub(exe, capture):
+def _launcher_stub(exe, capture, warp=False):
     """Build the attributes Launcher.start touches without creating a window."""
 
     stub = types.SimpleNamespace(
@@ -260,6 +260,7 @@ def _launcher_stub(exe, capture):
         log_path=None,
         path=_Variable(str(exe)),
         capture=_Variable(capture),
+        warp=_Variable(warp),
         output=_Text(),
         entry=_Control(),
         browse=_Control(),
@@ -288,7 +289,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         (self.target / "release").mkdir(parents=True)
         self.package, self.exe = self.make_package()
 
-    def _run(self, action="launch", capture=False, environ=None, profiles=("diag",)):
+    def _run(self, action="launch", capture=False, environ=None, profiles=("diag",), warp=False):
         for profile in profiles:
             path = self.target / profile / "victory.exe"
             path.write_bytes(b"MZ")
@@ -323,7 +324,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
             DEVNULL=meraki.subprocess.DEVNULL,
             CREATE_NO_WINDOW=getattr(meraki.subprocess, "CREATE_NO_WINDOW", 0),
         )
-        stub = _launcher_stub(self.exe, capture)
+        stub = _launcher_stub(self.exe, capture, warp)
         environ = environ or {}
 
         try:
@@ -346,6 +347,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
             capture=False,
             environ={
                 "VICTORY_CAPTURE": "stale",
+                "VICTORY_D3D12_WARP": "1",
                 "VICTORY_GAME_DIR": "stale",
                 "VICTORY_UNRELATED": "stale",
                 "MERAKI_TEST_SENTINEL": "kept",
@@ -360,7 +362,7 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertNotIn("VICTORY_UNRELATED", env)
         self.assertEqual(env["VICTORY_GAME_DIR"], str(self.exe.parent))
         self.assertEqual(env["MERAKI_TEST_SENTINEL"], "kept")
-        self.assertEqual(env["VICTORY_D3D12_WARP"], "1")
+        self.assertNotIn("VICTORY_D3D12_WARP", env)
         self.assertEqual(env["VICTORY_CACHE_DIR"], str(local / "cache"))
         self.assertEqual(env["VICTORY_DATA_DIR"], str(local / "data"))
         self.assertEqual(env["TMP"], str(local / "tmp"))
@@ -376,6 +378,14 @@ class CaptureEnvironmentTests(ScratchMixin, unittest.TestCase):
         self.assertFalse(log.read_bytes().startswith(b"Diagnostic frames:"))
         self.assertIsNone(stub.frames_path)
         self.assertIsNotNone(stub.started_at)
+
+    def test_warp_is_opt_in_and_only_applied_to_launch(self):
+        for action in ("launch", "check"):
+            with self.subTest(action=action):
+                _, calls, errors, _, _ = self._run(action=action, warp=True)
+                self.assertEqual(errors, [])
+                self.assertEqual(calls[0]["env"].get("VICTORY_D3D12_WARP"),
+                                 "1" if action == "launch" else None)
 
     def test_capture_on_creates_frame_folder_and_sets_environment(self):
         stub, calls, errors, local, logs = self._run(

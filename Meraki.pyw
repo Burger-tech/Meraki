@@ -298,7 +298,7 @@ def _paint_status(launcher, tone):
 
 def _set_controls(launcher, enabled):
     state = "normal" if enabled else "disabled"
-    for name in ("entry", "browse", "inspect", "check", "launch", "capture_toggle"):
+    for name in ("entry", "browse", "inspect", "check", "launch", "capture_toggle", "warp_toggle"):
         control = getattr(launcher, name, None)
         if control is not None:
             control.configure(state=state)
@@ -400,8 +400,9 @@ class Launcher:
         self.package_dir = None
         self.path = tk.StringVar(value=detect_title())
         self.capture = tk.BooleanVar(value=False)
-        self.status = tk.StringVar(value="Ready. WARP uses the CPU to render graphics.")
-        self.detail = tk.StringVar(value="Choose a package, then inspect it or launch with WARP.")
+        self.warp = tk.BooleanVar(value=False)
+        self.status = tk.StringVar(value="Ready. Hardware GPU is the default.")
+        self.detail = tk.StringVar(value="Choose a package, then inspect it or launch.")
         self.clock_var = tk.StringVar(value="00:00")
         self.package_var = tk.StringVar(value="No package selected.")
         self.executable_var = tk.StringVar(value="No executable")
@@ -429,10 +430,10 @@ class Launcher:
             self.detail.set("Runtime not built. Run .\\Build.ps1 before launching.")
             _paint_status(self, "stopping")
         elif build_state == "release":
-            self.detail.set("Release build only. Build diagnostics to launch with WARP.")
+            self.detail.set("Release build only. Build diagnostics to launch.")
             _paint_status(self, "stopping")
         elif self.package_dir is not None:
-            self.detail.set("Package ready. Inspect it, check imports or launch with WARP.")
+            self.detail.set("Package ready. Inspect it, check imports or launch.")
         _refresh_session_info(self)
         self.root.bind("<Control-o>", lambda _event: self.choose())
         self.root.bind("<F5>", lambda _event: self.start("launch"))
@@ -475,7 +476,7 @@ class Launcher:
         header = tk.Frame(outer, bg=BG)
         header.pack(fill="x")
         tk.Label(header, text="Meraki", font=(FONT, 23, "bold"), bg=BG, fg=INK).pack(anchor="w")
-        tk.Label(header, text="Xbox title launcher for Windows 11  ·  WARP renderer",
+        tk.Label(header, text="Xbox title launcher for Windows 11",
                  font=(FONT, 10), bg=BG, fg=MUTED).pack(anchor="w", pady=(1, 0))
 
         self._build_status(outer)
@@ -576,7 +577,10 @@ class Launcher:
             actions, text="Capture frames and timing on launch", variable=self.capture,
             style="Card.TCheckbutton")
         self.capture_toggle.pack(side="left", padx=(17, 0))
-        self.launch = ttk.Button(actions, text="Launch with WARP", style="Accent.TButton",
+        self.warp_toggle = ttk.Checkbutton(actions, text="Use WARP", variable=self.warp,
+                                           style="Card.TCheckbutton")
+        self.warp_toggle.pack(side="left", padx=(10, 0))
+        self.launch = ttk.Button(actions, text="Launch", style="Accent.TButton",
                                  command=lambda: self.start("launch"))
         self.launch.pack(side="right")
         self.stop = ttk.Button(actions, text="Stop", style="Danger.TButton",
@@ -658,7 +662,7 @@ class Launcher:
         self.output.tag_configure("ok", foreground="#8fe0a8")
         self.output.tag_configure("info", foreground="#9ec8f5")
         self.output.insert("1.0", "Session output will appear here. Choose a package, then "
-                                  "inspect it, check imports or launch with WARP.\n")
+                                  "inspect it, check imports or launch.\n")
         self.output.configure(state="disabled")
 
     # -- package, runtime and session panels ---------------------------
@@ -764,8 +768,11 @@ class Launcher:
             temp.mkdir(exist_ok=True)
             env = {k: v for k, v in os.environ.items() if not k.upper().startswith("VICTORY_")}
             env.update(VICTORY_GAME_DIR=str(exe.parent), VICTORY_CACHE_DIR=str(LOCAL / "cache"),
-                       VICTORY_DATA_DIR=str(LOCAL / "data"), VICTORY_D3D12_WARP="1",
+                       VICTORY_DATA_DIR=str(LOCAL / "data"),
                        TMP=str(temp), TEMP=str(temp), NO_COLOR="1")
+            use_warp = action == "launch" and self.warp.get()
+            if use_warp:
+                env["VICTORY_D3D12_WARP"] = "1"
             path = LOGS / f"{action}-{datetime.now():%Y%m%d-%H%M%S-%f}.log"
             self.frames_path = None
             with path.open("xb") as sink:
@@ -806,8 +813,8 @@ class Launcher:
         self.stop.configure(state="normal")
         _set_status(self, {"inspect": "Inspecting executable...",
                            "check": "Checking title imports...",
-                           "launch": "Running title with WARP..."}[action],
-                    "Preparing session..." if action != "launch" else "Starting the WARP runtime...",
+                           "launch": "Running title with WARP..." if use_warp else "Running title on GPU..."}[action],
+                    "Preparing session...",
                     "busy")
         _refresh_session_info(self)
         self.poll()
