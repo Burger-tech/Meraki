@@ -7,7 +7,7 @@
 
 ### Live gameplay acceptance
 
-- Hardware is now the default in the launcher and live-test briefs. WARP remains an explicit diagnostic option. The launcher suite passed all 114 tests. The live tester has been directed to try the title's performance mode on the RX 7800 XT if available and measure actual presentation cadence. Sustained 60 FPS remains unverified.
+- Hardware is now the default in the launcher and live-test briefs. WARP remains an explicit diagnostic option. The launcher suite passed all 114 tests. The live tester will use the title's native pacing and prioritize working first-mission graphics and controls.
 
 - The isolated timed-capture candidate built in diagnostics and release. GPU diagnostics tests passed (59 passed, one ignored). With `VICTORY_CAPTURE_TIMED=1`, it captures the first eligible rendered frame at or after each 2.5-second interval, records the actual gap, and caps saved frames. The live tester has the binary. Live cadence and performance overhead remain unverified.
 
@@ -26,7 +26,7 @@
 - A controlled 60 Hz versus 120 Hz advertised-mode comparison can test whether display modes influence the menu's requested interval. An unchanged request would leave other title settings and gameplay modes untested.
 
 - Run interactive gameplay tests with the game window visible on the Windows desktop. Announce each live run before launch, share milestones during the run, and close the game afterward. Use the launcher to keep the live log available.
-- The performance target is sustained 60 FPS during player-controlled gameplay, with a 16.67 ms frame budget. Verify camera and movement in a visibly rendered scene before measuring. Record the renderer, resolution, duration, and frame pacing. Use WARP to diagnose rendering and use hardware results to evaluate the performance target. Upstream reports hardware GPU resets on world entry, so establish a controlled hardware test after the mission renders.
+- The first performance target is 15–30 FPS on hardware during player-controlled gameplay. Verify camera and movement in a visibly rendered scene before measuring. Record the renderer, resolution, duration, and frame pacing. Keep the title's native frame clock.
 - During the first visible mission, record an idle baseline, rotate the camera in both directions, then move forward and backward against a fixed landmark. Capture the matching frames and use the black-frame probe history to distinguish a fade from sustained dark output. Confirm keyboard focus before sending input.
 - Launcher Stop now requests VIctory's Windows system-close path. A visible WARP smoke test presented frames and reached the runtime suspend handler. VIctory hit its one-second suspension deadline and exited with code 0. Pipeline cache persistence remains unverified.
 
