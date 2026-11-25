@@ -6,7 +6,7 @@ Meraki contains no game data. The pinned `ffe310e` build is not playable through
 
 ## Availability and access
 
-As of 2026-11-24, the Meraki repository is **private** and has **no GitHub Releases or tags**. There are no downloadable binaries. You need access to `https://github.com/Burger-tech/Meraki` and must build from source.
+As of 2026-11-24, the Meraki repository is **private**. The only downloads are source-only snapshot ZIPs attached to `src-*` releases; there are no binaries and no game data in any package. You need access to `https://github.com/Burger-tech/Meraki` and must build from source.
 
 ## Get the source
 
@@ -25,6 +25,8 @@ git submodule update --init --recursive
 ```
 
 `baseline` is the VIctory submodule. `Build.ps1` stops with `Run git submodule update --init first.` when it is missing.
+
+Source snapshots are published as versioned ZIPs on the `src-*` releases. Each ZIP contains Meraki's launcher, tools, tests and documentation plus `BUILDING.md`, `NOTICE.md`, `manifest.json` and `SHA256SUMS.txt`; it never contains the `baseline` submodule, game data, build outputs, captures or logs.
 
 ## Prerequisites
 
