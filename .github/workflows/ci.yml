@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile Python sources
+        run: python -m compileall -q Meraki.pyw tools tests
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: PowerShell syntax check
+        shell: pwsh
+        run: |
+          foreach ($f in (Get-ChildItem -Recurse -Include *.ps1 -Path Build.ps1, tools)) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { $errs | ForEach-Object { Write-Error "$($f.Name): $_" } }
+          }
+
+  build:
+    name: Build baseline (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $pin = (Select-String -Path baseline/rust-toolchain.toml -Pattern '^channel\s*=\s*"([^"]+)"$').Matches[0].Groups[1].Value
+          rustup toolchain install $pin --profile minimal --component rustfmt,clippy
+          "RUSTUP_TOOLCHAIN=$pin" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: baseline
+      - name: Format check
+        run: cargo fmt --manifest-path baseline/Cargo.toml --all -- --check
+        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path baseline/Cargo.toml -p victory --features diagnostics
+        continue-on-error: true
+      - name: Build (diag)
+        run: cargo build --locked --manifest-path baseline/Cargo.toml -p victory --profile diag --features diagnostics
+      - name: Build (release)
+        run: cargo build --locked --manifest-path baseline/Cargo.toml -p victory --profile release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: victory-windows
+          path: |
+            baseline/target/diag/*.exe
+            baseline/target/release/*.exe
+          if-no-files-found: warn
