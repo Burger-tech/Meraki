@@ -139,17 +139,17 @@ $form.Font = $font
 
 function Add-Label([string]$text, [int]$x, [int]$y) { $label = New-Object Windows.Forms.Label; $label.Text=$text; $label.Left=$x; $label.Top=$y; $label.AutoSize=$true; $form.Controls.Add($label); return $label }
 function Add-TextBox([int]$x, [int]$y, [int]$w) { $box = New-Object Windows.Forms.TextBox; $box.Left=$x; $box.Top=$y; $box.Width=$w; $form.Controls.Add($box); return $box }
-Add-Label 'Select your legally obtained game executable' 20 18
+$null = Add-Label 'Select your legally obtained game executable' 20 18
 $gameBox = Add-TextBox 20 42 500; $gameBox.Text = if ($state.GameExe) { $state.GameExe } else { '' }
 $gameBrowse = New-Object Windows.Forms.Button; $gameBrowse.Text='Browse'; $gameBrowse.Left=530; $gameBrowse.Top=40; $gameBrowse.Width=80; $form.Controls.Add($gameBrowse)
 $gameBrowse.Add_Click({ $dialog=New-Object Windows.Forms.OpenFileDialog; $dialog.Filter='Game executable|game_scarlett_master.exe'; if($dialog.ShowDialog() -eq 'OK'){$gameBox.Text=$dialog.FileName} })
-Add-Label 'FSR SDK folder (optional, supplied separately)' 20 82
+$null = Add-Label 'FSR SDK signedbin folder (needed for FSR3)' 20 82
 $ffxBox = Add-TextBox 20 106 500; $ffxBox.Text = if ($state.FfxDir) { $state.FfxDir } else { '' }
 $ffxBrowse = New-Object Windows.Forms.Button; $ffxBrowse.Text='Browse'; $ffxBrowse.Left=530; $ffxBrowse.Top=104; $ffxBrowse.Width=80; $form.Controls.Add($ffxBrowse)
 $ffxBrowse.Add_Click({ $dialog=New-Object Windows.Forms.FolderBrowserDialog; if($dialog.ShowDialog() -eq 'OK'){$ffxBox.Text=$dialog.SelectedPath} })
-Add-Label 'Console profile' 20 150
+$null = Add-Label 'Console profile' 20 150
 $consoleBox=New-Object Windows.Forms.ComboBox; $consoleBox.Left=20; $consoleBox.Top=174; $consoleBox.Width=150; $consoleBox.DropDownStyle='DropDownList'; [void]$consoleBox.Items.AddRange(@('series-x','series-s')); $consoleBox.SelectedItem=if($state.Console){$state.Console}else{'series-x'}; $form.Controls.Add($consoleBox)
-Add-Label 'Upscaler' 200 150
+$null = Add-Label 'Upscaler' 200 150
 $upscaleBox=New-Object Windows.Forms.ComboBox; $upscaleBox.Left=200; $upscaleBox.Top=174; $upscaleBox.Width=150; $upscaleBox.DropDownStyle='DropDownList'; $upscaleBox.Items.AddRange(@('Native','FSR3')); $upscaleBox.SelectedItem=if($state.Upscaler -eq 'fsr3'){'FSR3'}else{'Native'}; $form.Controls.Add($upscaleBox)
 $fg=New-Object Windows.Forms.CheckBox; $fg.Text='FSR Frame Generation'; $fg.Left=20; $fg.Top=220; $fg.Checked=if($null -ne $state.FrameGeneration){[bool]$state.FrameGeneration}else{$true}; $form.Controls.Add($fg)
 $hud=New-Object Windows.Forms.CheckBox; $hud.Text='HUDless FSR input'; $hud.Left=220; $hud.Top=220; $hud.Checked=if($null -ne $state.Hudless){[bool]$state.Hudless}else{$true}; $form.Controls.Add($hud)
