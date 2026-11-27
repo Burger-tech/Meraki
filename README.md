@@ -1,12 +1,20 @@
 # Meraki
 
+Download **FoxhoundLauncher.exe** from the [Meraki releases](https://github.com/Burger-tech/Meraki/releases).
+Open it on Windows x64 and select your own `game_scarlett_master.exe`. The launcher includes the Foxhound
+runtime and offers Series X and Series S profiles, FSR3, frame generation, HUDless input, and the light
+limiter. FSR3 uses the AMD FidelityFX SDK folder you select. Source and setup details are in
+[runtime/foxhound/README.md](runtime/foxhound/README.md).
+
 Meraki is a Windows launcher and diagnostics harness for a locally installed Xbox Series X|S title. It uses the pinned [VIctory](https://github.com/Marvisak/VIctory) runtime (`ffe310e`), detects the title from `MicrosoftGame.Config`, checks `common.rpf`, `levels.rpf` and `audio.rpf`, and launches the diagnostic build on the hardware GPU by default.
 
 Meraki contains no game data. The pinned `ffe310e` build is not playable through the first mission. An isolated fxceless `4e17478` comparison runtime rendered the lit intro world on the RX 7800 XT, but the native hardware world path measured a median **1.8 FPS / 556.1 ms per frame**, and no HUD or confirmed input handoff was reached. Earlier menu runs met the title's 30 FPS request at 33.3 ms median; the latest pause menu was observed at 20 FPS / 49.9 ms. The intro arm had no device removal, but minimum free commit fell to **338 MiB**, so memory headroom remains tight. Host-side performance work is underway.
 
 ## Availability and access
 
-As of 2026-11-24, the Meraki repository is **private**. The only downloads are source-only snapshot ZIPs attached to `src-*` releases; there are no binaries and no game data in any package. You need access to `https://github.com/Burger-tech/Meraki` and must build from source.
+The Meraki repository is **private**. Anyone with repository access can download the Windows launcher from
+a `foxhound-v*` release. The `src-*` releases contain source snapshots of the earlier diagnostics harness.
+Supply your game files locally for either launcher.
 
 ## Get the source
 

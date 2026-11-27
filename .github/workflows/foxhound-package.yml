@@ -1,0 +1,65 @@
+name: Build Foxhound Windows package
+
+on:
+  push:
+    branches: [main]
+    tags: ['foxhound-v*']
+    paths:
+      - 'runtime/foxhound/**'
+      - '.github/workflows/foxhound-package.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: runtime/foxhound
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - name: Check runtime asset policy
+        run: cargo xtask policy
+      - name: Build runtime
+        run: cargo build --release --locked -p victory --features diagnostics
+      - name: Build launcher and portable ZIP
+        run: |
+          & .\scripts\package-windows.ps1 -Runtime .\target\release\victory.exe -OutputDirectory "$env:RUNNER_TEMP\foxhound-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foxhound-windows-x64
+          path: |
+            ${{ runner.temp }}/foxhound-release/FoxhoundLauncher.exe
+            ${{ runner.temp }}/foxhound-release/Foxhound-Windows-x64.zip
+            ${{ runner.temp }}/foxhound-release/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/foxhound-v')
+    needs: package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: foxhound-windows-x64
+          path: release
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @'
+          Download and run **FoxhoundLauncher.exe** on Windows x64. For a portable folder, extract **Foxhound-Windows-x64.zip** and open **FoxhoundLauncher.cmd**.
+
+          Select your own `game_scarlett_master.exe` beside its game archives. The package contains the launcher and runtime. For FSR3 and frame generation, select the `signedbin` directory from the [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases).
+
+          The release includes SHA-256 checksums. The source archive contains the runtime source and build scripts. Supply all game files locally.
+          '@
+          $notes | gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --verify-tag --title "Foxhound ${env:GITHUB_REF_NAME}" --notes-file - release/FoxhoundLauncher.exe release/Foxhound-Windows-x64.zip release/SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
