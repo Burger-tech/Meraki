@@ -1120,7 +1120,7 @@ const INTERFACE_COMPOSITE: [&str; 2] = ["0602c2384acbb3b2", "a78d088fa55aa495"];
 /// generation runs on our swap chain and `VICTORY_FRAMEGEN_HUDLESS` is not 0.
 #[inline]
 pub(crate) fn hudless_wanted() -> bool {
-    HUDLESS_WANTED.load(Relaxed)
+    HUDLESS_WANTED.load(Relaxed) || crate::framegen::hudless_wanted()
 }
 
 static HUDLESS_WANTED: AtomicBool = AtomicBool::new(false);
@@ -1209,7 +1209,7 @@ pub(crate) fn before_target_draw(
                 state = %pipeline.state,
                 triangle,
                 after_the_copy_in_its_list = list.hudless() != 0,
-                "DLSS Frame Generation: this pipeline draws into the texture the title presents (the scene's composite does; an interface drawn here before the interface composite would be in the colour without the interface)"
+                "Frame generation: this pipeline draws into the texture the title presents (an interface drawn before the interface composite would be in the colour without the interface)"
             );
         }
         return;
@@ -1248,7 +1248,7 @@ pub(crate) fn before_target_draw(
         format = desc.Format.0,
         pipeline = %pipeline.name,
         state = %pipeline.state,
-        "DLSS Frame Generation: the colour without the interface is copied in front of the title's interface composite (first time)"
+        "Frame generation: copied the presented texture before the interface composite"
     );
 }
 
@@ -1309,7 +1309,7 @@ pub(crate) fn hudless_submitted(id: u64) {
 /// At a present of host texture `shown`: it is one the title presents
 /// ([`SHOWN`]), and the first copy of it submitted since its last present,
 /// if any, is the frame's colour without the interface.
-fn hudless_for(shown: &ID3D12Resource) -> Option<ID3D12Resource> {
+pub(crate) fn hudless_for(shown: &ID3D12Resource) -> Option<ID3D12Resource> {
     let shown = shown.as_raw() as usize;
     if !SHOWN.iter().any(|s| s.load(Relaxed) == shown) {
         SHOWN[SHOWN_NEXT.fetch_add(1, Relaxed) as usize % SHOWN.len()].store(shown, Relaxed);

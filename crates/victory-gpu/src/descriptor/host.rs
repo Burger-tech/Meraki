@@ -59,6 +59,21 @@ impl Slots {
         out
     }
 
+    fn part(&self, part: u32, parts: u32) -> Vec<u32> {
+        if part >= parts {
+            return Vec::new();
+        }
+        if !64u32.is_multiple_of(parts) {
+            return self.all(|slot| slot % parts == part);
+        }
+        let mask = (part..64).step_by(parts as usize).fold(0u64, |mask, bit| mask | 1 << bit);
+        let mut out = Vec::new();
+        for (word, bits) in self.0.iter().enumerate() {
+            Self::of(word, bits.load(std::sync::atomic::Ordering::Acquire) & mask, &mut out, &|_| true);
+        }
+        out
+    }
+
     /// All of them, and none is left.
     fn take(&self) -> Vec<u32> {
         use std::sync::atomic::Ordering::{AcqRel, Acquire};
@@ -3182,8 +3197,12 @@ impl HostHeap {
 
     /// Of [`HostHeap::buffer_slots`], those of one of `parts` parts: every
     /// slot is in the same part each time.
-    pub(crate) fn buffer_slots_of(&self, part: u32, parts: u32) -> Vec<u32> {
-        self.buffers.all(|slot| slot % parts == part)
+    pub(crate) fn buffer_slots_of(&self, part: u32, parts: u32, masked: bool) -> Vec<u32> {
+        if masked {
+            self.buffers.part(part, parts)
+        } else {
+            self.buffers.all(|slot| slot % parts == part)
+        }
     }
 
     /// The title slots whose buffer view was written, or went, since the
@@ -5493,6 +5512,19 @@ fn null_view(at: D3D12_CPU_DESCRIPTOR_HANDLE) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partition_mask_selects_the_same_slots_in_order() {
+        let slots = Slots::new(155);
+        for index in [0, 1, 15, 16, 31, 32, 63, 64, 65, 95, 127, 128, 154] {
+            slots.put(index);
+        }
+        for parts in [1, 3, 8, 16, 32, 64, 80] {
+            for part in 0..parts {
+                assert_eq!(slots.part(part, parts), slots.all(|slot| slot % parts == part));
+            }
+        }
+    }
 
     /// A view of a host copy that begins at a later level shows the same
     /// levels of it.

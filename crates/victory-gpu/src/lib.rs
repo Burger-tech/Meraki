@@ -43,6 +43,8 @@ mod book;
 mod heap_marks;
 #[cfg(windows)]
 mod host;
+#[cfg(all(windows, feature = "diagnostics"))]
+mod present_times;
 #[cfg(windows)]
 mod indirect;
 #[cfg(windows)]
@@ -132,3 +134,8 @@ pub use watch::{
     title_memory_reading, title_memory_remapped, title_memory_remapping, title_memory_splitting, title_memory_unmapping,
     title_memory_written, use_lazy_views, use_soft_views, writing as kernel_will_write,
 };
+
+#[cfg(windows)]
+pub mod ffx;
+#[cfg(windows)]
+mod framegen;

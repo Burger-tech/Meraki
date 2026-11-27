@@ -6,9 +6,9 @@
 //!
 //! What it finds are refreshes of host copies, which are steps of the list
 //! for its submission, and what it makes are descriptors, which the card
-//! reads when the list runs: both are there when the list is closed
-//! (`HostList::close` waits), and the refreshes stand at the place in the
-//! list's steps where the pass was begun.
+//! reads when the list runs. Closing normally waits for both.
+//! `VICTORY_HEAP_JOIN_AT_SUBMIT=1` moves the wait before submission and
+//! dependency planning. Refreshes stay at their original place in the list.
 
 use super::*;
 
@@ -18,14 +18,14 @@ pub(crate) type Refresh = (std::sync::Arc<crate::shadow::Shadow>, u64, u64);
 /// What is being found, until it is.
 pub(crate) struct Coming(Mutex<Option<Vec<Refresh>>>, std::sync::Condvar);
 
-/// Since the last frame line: microseconds lists waited at their close.
+/// Since the last frame line: microseconds spent joining the heap scans.
 pub(crate) static WAITED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Coming {
     /// What was found.
     pub(crate) fn wait(&self) -> Vec<Refresh> {
         let began = std::time::Instant::now();
-        let _waiting = crate::timeline::span("a list's close waits for the heap's views");
+        let _waiting = crate::timeline::span("a list waits for the heap's views");
         let mut found = self.0.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if let Some(found) = found.take() {

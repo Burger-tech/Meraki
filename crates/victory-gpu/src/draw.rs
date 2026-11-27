@@ -841,6 +841,89 @@ pub(crate) static HEAP_TEXTURES_FULL: AtomicU64 = AtomicU64::new(0);
 /// memory is looked at again, each counted from the look before.
 const RECHECK_FRAMES: [u64; 5] = [4, 12, 40, 120, 400];
 
+// Values above the normal look indices encode a bounded hot period. Once a
+// fingerprint catches a write with no mapping/descriptor event, one unchanged
+// frame cannot prove that an aliased animation has stopped (three-buffer rings
+// are unchanged on two frames out of three). Recheck for 64 quiet frames.
+const HOT_RECHECK_BASE: u8 = 64;
+const HOT_RECHECK_START: u8 = HOT_RECHECK_BASE + 63;
+
+fn hot_rechecks() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VICTORY_TEXTURE_RECHECK_HOT").is_some_and(|v| v == "1"))
+}
+
+fn next_texture_recheck(looks: u8) -> Option<(u64, u8)> {
+    if looks >= HOT_RECHECK_BASE {
+        return Some((1, if looks == HOT_RECHECK_BASE { 0 } else { looks - 1 }));
+    }
+    RECHECK_FRAMES.get(usize::from(looks) + 1).map(|&wait| (wait, looks + 1))
+}
+
+// Observed Series S CS_RayMiss variant: UAV(1,104) is its half-size
+// reflection image; SRV(1,96) is a same-size R32_FLOAT input. The usual
+// full-size depth table is a 1x1 dummy. Keep this diagnostic opt-in and
+// restricted to that exact variant until its reconstruction is validated.
+fn reduced_miss_depth_matches(program: &str, image: &D3D12_RESOURCE_DESC, depth: &D3D12_RESOURCE_DESC) -> bool {
+    program == "[compute 06bb6e728c7c99bf]"
+        && image.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        && depth.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        && image.Format.0 == 26
+        && depth.Format.0 == 41
+        && image.Width > 1 && image.Height > 1
+        && (image.Width, image.Height) == (depth.Width, depth.Height)
+        && image.DepthOrArraySize == 1 && depth.DepthOrArraySize == 1
+        && image.SampleDesc.Count == 1 && depth.SampleDesc.Count == 1
+}
+
+#[cfg(test)]
+mod hot_recheck_tests {
+    use super::*;
+
+    #[test]
+    fn reduced_reflection_depth_rejects_other_variants_formats_and_sizes() {
+        let image = D3D12_RESOURCE_DESC {
+            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+            Width: 640, Height: 360, DepthOrArraySize: 1,
+            Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R11G11B10_FLOAT,
+            SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            ..Default::default()
+        };
+        let mut depth = image;
+        depth.Format = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_FLOAT;
+        let name = "[compute 06bb6e728c7c99bf]";
+        assert!(reduced_miss_depth_matches(name, &image, &depth));
+        assert!(!reduced_miss_depth_matches("another variant", &image, &depth));
+        depth.Width = 1280;
+        assert!(!reduced_miss_depth_matches(name, &image, &depth));
+        depth.Width = 640;
+        depth.Format = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+        assert!(!reduced_miss_depth_matches(name, &image, &depth));
+    }
+
+    #[test]
+    fn aliased_ring_stays_hot_across_unchanged_frames_and_eventually_cools() {
+        let mut state = HOT_RECHECK_START;
+        for _ in 0..20 {
+            // An animation writes every third frame, with no notification.
+            for _ in 0..2 {
+                let (wait, next) = next_texture_recheck(state).unwrap();
+                assert_eq!(wait, 1);
+                state = next;
+            }
+            state = HOT_RECHECK_START;
+        }
+        for _ in 0..64 {
+            let (wait, next) = next_texture_recheck(state).unwrap();
+            assert_eq!(wait, 1);
+            state = next;
+        }
+        assert_eq!(state, 0);
+        assert_eq!(next_texture_recheck(state), Some((12, 1)));
+        assert_eq!(next_texture_recheck(4), None);
+    }
+}
+
 /// Looks at uploaded textures picked by index that found the memory as it
 /// was, and that found it changed (uploaded again), since the start.
 pub(crate) static HEAP_TEXTURES_RECHECKED: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -1171,7 +1254,7 @@ fn heap_buffer_pass(heap: &crate::descriptor::Heap, host: &crate::descriptor::ho
     // before its memory had a host copy is only made then.
     let mut kept = host.buffer_sweep.lock().unwrap_or_else(|e| e.into_inner());
     let BufferSweep { passes, ranges, unwatched } = &mut *kept;
-    let changed = host.buffer_changes();
+    let mut changed = host.buffer_changes();
     let all = *passes == 0 || (*passes % HEAP_ROUND == 0 && !heap_spread());
     let slots = if all {
         ranges.0.clear();
@@ -1180,7 +1263,19 @@ fn heap_buffer_pass(heap: &crate::descriptor::Heap, host: &crate::descriptor::ho
         // The written ones, and this pass's part of the others.
         let (part, parts) = ((*passes % HEAP_ROUND) as u32, HEAP_ROUND as u32);
         ranges.forget_part(part, parts);
-        let mut slots = host.buffer_slots_of(part, parts);
+        let fast = crate::asked_for!("VICTORY_BUFFER_SWEEP_FAST");
+        let mut slots = host.buffer_slots_of(part, parts, fast);
+        if fast {
+            // Both lists are in slot order. Keep the partition's first
+            // occurrence and the notification order of the other slots.
+            let mut scanned = slots.iter().peekable();
+            changed.retain(|slot| {
+                while scanned.peek().is_some_and(|&&seen| seen < *slot) {
+                    scanned.next();
+                }
+                scanned.peek().is_none_or(|&&seen| seen != *slot)
+            });
+        }
         slots.extend(changed);
         slots
     } else {
@@ -1788,6 +1883,8 @@ impl State {
         if !self.bind(list, p, false) {
             return false;
         }
+        #[cfg(feature = "diagnostics")]
+        self.note_pbr_lighting_input(p);
         let l = &list.list;
         // Vertex buffers the input layout reads.
         let mut views = [D3D12_VERTEX_BUFFER_VIEW::default(); 32];
@@ -1950,6 +2047,12 @@ impl State {
             // The title may release the pipeline before it submits the list.
             list.bind_pipeline(&p.name, &p.pso, &p.root);
         }
+        #[cfg(feature = "diagnostics")]
+        let keep_packed_table = compute
+            && crate::ambient::packed_light_limit().is_some()
+            && crate::capture::packed_light_writer(&p.name).is_some();
+        #[cfg(not(feature = "diagnostics"))]
+        let keep_packed_table = false;
         for stage in &p.stages {
             let t = stage.translated();
             STORES.set(t.stores);
@@ -1962,7 +2065,7 @@ impl State {
                 once!("a draw whose descriptor table found no free slots is dropped");
                 return false;
             }
-            if stage.shader.ambient.is_some() {
+            if stage.shader.ambient.is_some() || keep_packed_table {
                 self.ambient_tables.clear();
                 self.ambient_tables.extend(made.iter().copied());
             }
@@ -3255,6 +3358,7 @@ impl State {
             // (all their blocks are shown at other addresses too), and each
             // was shown four frames late, over and over.
             let mut again_in = RECHECK_FRAMES[0];
+            let mut again_looks = 0;
             // What the queue knew of it when the slots due were taken, while
             // its marks say it holds the write handed out still; else (or with
             // `VICTORY_QUEUE_BATCH=0`) asked now.
@@ -3267,14 +3371,18 @@ impl State {
                 if looked == print {
                     HEAP_TEXTURES_RECHECKED[0].fetch_add(1, Ordering::Relaxed);
                     outcome(slot_outcome::UNCHANGED);
-                    tells.tell(index, write, match RECHECK_FRAMES.get(usize::from(looks) + 1) {
-                        Some(wait) => Told::Recheck(frame + wait, (at, len), print, looks + 1, uploaded),
+                    tells.tell(index, write, match next_texture_recheck(looks) {
+                        Some((wait, next)) => Told::Recheck(frame + wait, (at, len), print, next, uploaded),
                         None => Told::Done(None),
                     });
                     continue;
                 }
                 if recheck_soon() {
                     again_in = 1;
+                }
+                if hot_rechecks() {
+                    again_in = 1;
+                    again_looks = HOT_RECHECK_START;
                 }
                 let n = HEAP_TEXTURES_RECHECKED[1].fetch_add(1, Ordering::Relaxed);
                 if n < 200 || n.is_multiple_of(1000) {
@@ -3497,7 +3605,7 @@ impl State {
                     memory.map(|(at, len)| (at, len, crate::texture::fingerprint(at, len)))
                 });
                 tells.tell(index, write, match memory {
-                    Some((at, len, print)) => Told::Recheck(frame + again_in, (at, len), print, 0, frame),
+                    Some((at, len, print)) => Told::Recheck(frame + again_in, (at, len), print, again_looks, frame),
                     None => Told::Done(again),
                 });
                 continue;
@@ -3630,7 +3738,7 @@ impl State {
             HEAP_TEXTURES.fetch_add(1, Ordering::Relaxed);
             tells.tell(index, write, match memory {
                 // Whole and uploaded: looked at again (see above).
-                Some((at, len, print)) => Told::Recheck(frame + again_in, (at, len), print, 0, frame),
+                Some((at, len, print)) => Told::Recheck(frame + again_in, (at, len), print, again_looks, frame),
                 None => Told::Done(again),
             });
         }
@@ -3751,8 +3859,33 @@ impl State {
                 unsafe { list.list.SetComputeRoot32BitConstant(param, threads[0], word) };
             }
         }
+        #[cfg(feature = "diagnostics")]
+        let scene_probe = crate::capture::scene_uav_probe(&p.name).and_then(|(frame, offset, labels)| {
+            let Some(Root::Table(table)) = self.roots_ref(true).get(1) else { return None };
+            let view = crate::descriptor::view(*table + offset * 4)?;
+            match crate::descriptor::host::placed_texture(&view).unwrap_or(view) {
+                View::Unordered(resource, ..) => Some((resource as This, frame, labels)),
+                _ => None,
+            }
+        });
+        #[cfg(feature = "diagnostics")]
+        if let Some((target, frame, [before, _])) = scene_probe {
+            crate::capture::scene_sample(list, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, frame, before);
+        }
+        #[cfg(feature = "diagnostics")]
+        let packed_probe = self.packed_light_writer(&p.name);
+        #[cfg(feature = "diagnostics")]
+        crate::capture::packed_light_sample(list, packed_probe, false);
         // SAFETY: an open list with everything set.
         unsafe { list.list.Dispatch(x, y, z) };
+        #[cfg(feature = "diagnostics")]
+        self.limit_packed_light(list, packed_probe);
+        #[cfg(feature = "diagnostics")]
+        crate::capture::packed_light_sample(list, packed_probe, true);
+        #[cfg(feature = "diagnostics")]
+        if let Some((target, frame, [_, after])) = scene_probe {
+            crate::capture::scene_sample(list, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, frame, after);
+        }
         self.buffers_written();
         DISPATCHED.fetch_add(1, Ordering::Relaxed);
         if let Some(role) = p.stages.first().and_then(|s| s.shader.ambient)
@@ -3761,6 +3894,62 @@ impl State {
         {
             self.host_pipeline = 0;
             self.host_roots[1] = 0;
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn packed_light_writer(&self, pipeline: &str) -> Option<crate::capture::PackedLightWriter> {
+        let (frame, offset, labels) = crate::capture::packed_light_writer(pipeline)?;
+        let Some(Root::Table(table)) = self.roots_ref(true).get(1) else { return None };
+        let View::Unordered(resource, ..) = crate::descriptor::view(*table + u64::from(offset) * 4)? else { return None };
+        let target = resource as This;
+        let (backing, _) = crate::resource::texture_memory(target)?;
+        crate::capture::is_packed_light_input(backing as usize, frame)
+            .then_some(crate::capture::PackedLightWriter { target, offset, frame, labels })
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn note_pbr_lighting_input(&self, pipeline: &HostPipeline) {
+        if crate::ambient::packed_light_limit().is_none()
+            || crate::capture::material_draw_labels(pipeline).is_none()
+        {
+            return;
+        }
+        let Some(Root::Table(table)) = self.roots_ref(false).first() else { return };
+        let Some(View::Placed(false, texture, view)) = crate::descriptor::view(*table + 456 * 4) else { return };
+        if (texture[0], texture[4], texture[5], texture[6], texture[8]) != (3, 1280, 0, 720, 67) {
+            return;
+        }
+        let address = u64::from(view[10]) | u64::from(view[11]) << 32;
+        if address != 0 {
+            crate::capture::note_packed_light_input(address as usize);
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn limit_packed_light(&mut self, list: &HostList, probe: Option<crate::capture::PackedLightWriter>) {
+        let (Some(probe), Some(limit)) = (probe, crate::ambient::packed_light_limit()) else { return };
+        let Some(texture) = crate::resource::host_made(probe.target) else { return };
+        // SAFETY: a live host copy of the resource named by the title's UAV.
+        let desc = unsafe { texture.GetDesc() };
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32_UINT;
+        if desc.Format != DXGI_FORMAT_R32_UINT || desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
+            || (desc.Width, desc.Height, desc.MipLevels, desc.DepthOrArraySize, desc.SampleDesc.Count)
+                != (1280, 720, 1, 1, 1)
+        {
+            return;
+        }
+        let Some(heap) = (self.heaps[0] != 0)
+            .then(|| crate::descriptor::heap(self.heaps[0] as This).host())
+            .flatten() else { return };
+        let start = self.ambient_tables.iter().find(|m| m.0 == 1)
+            .map_or_else(|| self.user_value(true, 1, RootType::Table, 0), |m| m.1);
+        let handle = heap.gpu_handle((start + probe.offset * 4) / 32);
+        if crate::ambient::limit_packed_light(list, texture, handle, [1280, 720], limit) {
+            self.host_pipeline = 0;
+            self.host_roots[1] = 0;
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| tracing::info!(limit, "limiting the traced packed light texture"));
         }
     }
 
@@ -3941,6 +4130,21 @@ impl State {
             }),
             Role::Radiance | Role::Air => image,
         };
+        let depth = depth.or_else(|| {
+            if role != Role::Miss || !crate::switch::on("VICTORY_AMBIENT_MISS_REDUCED_DEPTH") {
+                return None;
+            }
+            let image_desc = &image.as_ref()?.0;
+            let candidate = entry(ResourceType::Srv, (1, 96))?;
+            if !reduced_miss_depth_matches(&p.name, image_desc, &candidate.0) {
+                return None;
+            }
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| tracing::info!(target: "victory_gpu::ambient", program = %p.name,
+                width = candidate.0.Width, height = candidate.0.Height,
+                "reflection diagnostic: reduced-size input selected at SRV(1,96)"));
+            Some(candidate)
+        });
         let (Some((of, image)), Some((seen, depth))) = (image, depth) else {
             once!(?role, "no stand-in for the indirect light: other tables");
             if role == Role::Miss {
@@ -4038,7 +4242,11 @@ impl State {
                 crate::resource::host_made(t as This).map(|r| {
                     // SAFETY: a live resource.
                     let d = unsafe { r.GetDesc() };
-                    format!("{t:#x} {}x{} f{}", d.Width, d.Height, d.Format.0)
+                    let mut target = format!("{t:#x} {}x{} f{}", d.Width, d.Height, d.Format.0);
+                    if let Some((address, _)) = crate::resource::texture_memory(t as This) {
+                        let _ = write!(target, " title={address:p}");
+                    }
+                    target
                 })
             };
             let targets: Vec<String> = self.targets.iter().filter_map(|&t| described(t)).collect();
@@ -4748,6 +4956,33 @@ impl State {
         out
     }
 
+    /// Save the two packed lighting views shared by the sampled PBR shaders.
+    #[cfg(feature = "diagnostics")]
+    fn capture_pbr_lighting_inputs(&self, list: &HostList, frame: u64) {
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
+
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| crate::switch::on("VICTORY_CAPTURE_PBR_LIGHTING_INPUTS")) {
+            return;
+        }
+        let Some(Root::Table(table)) = self.roots_ref(false).first() else { return };
+        for (offset, label) in [(456, "pbr-lighting-s0-456"), (1008, "pbr-lighting-s0-1008")] {
+            let Some(view) = crate::descriptor::view(table + offset * 4) else { continue };
+            let View::Shader(resource, _) = crate::descriptor::host::placed_texture(&view).unwrap_or(view)
+            else {
+                continue;
+            };
+            crate::capture::stage_sample(
+                list,
+                resource as This,
+                D3D12_RESOURCE_STATES(SHADER_RESOURCE as i32),
+                frame,
+                label,
+                DXGI_FORMAT_R9G9B9E5_SHAREDEXP,
+            );
+        }
+    }
+
     pub(crate) fn draw(
         &mut self,
         list: &HostList,
@@ -5313,6 +5548,21 @@ impl State {
                 if kind == MESH {
                     self.mesh_scissor(list, true);
                 }
+                #[cfg(feature = "diagnostics")]
+                let material_probe = crate::capture::material_draw_probe(p).and_then(|(frame, labels)| {
+                    self.targets.first().map(|&target| (target as This, frame, labels))
+                });
+                #[cfg(feature = "diagnostics")]
+                if let Some((target, frame, [before, _])) = material_probe {
+                    crate::capture::scene_sample(list, target, D3D12_RESOURCE_STATE_RENDER_TARGET, frame, before);
+                    if before == "hair-nodir-before" {
+                        self.capture_pbr_lighting_inputs(list, frame);
+                    }
+                }
+                #[cfg(feature = "diagnostics")]
+                let packed_probe = (kind == DISPATCH).then(|| self.packed_light_writer(&p.name)).flatten();
+                #[cfg(feature = "diagnostics")]
+                crate::capture::packed_light_sample(list, packed_probe, false);
                 // SAFETY: an open list with everything set; the scratch buffer and
                 // host copies are kept alive by the list, and the signature is cached.
                 unsafe {
@@ -5325,6 +5575,14 @@ impl State {
                         counter.as_ref().map_or(0, |(s, at)| s.offset(*at)),
                     )
                 };
+                #[cfg(feature = "diagnostics")]
+                self.limit_packed_light(list, packed_probe);
+                #[cfg(feature = "diagnostics")]
+                crate::capture::packed_light_sample(list, packed_probe, true);
+                #[cfg(feature = "diagnostics")]
+                if let Some((target, frame, [_, after])) = material_probe {
+                    crate::capture::scene_sample(list, target, D3D12_RESOURCE_STATE_RENDER_TARGET, frame, after);
+                }
                 if kind == MESH {
                     self.mesh_scissor(list, false);
                 }
@@ -5766,11 +6024,18 @@ fn view_state(view: Option<&View>) -> String {
 /// A view in a few words (diagnostics builds).
 #[cfg(feature = "diagnostics")]
 fn describe(view: Option<&View>) -> String {
+    use std::fmt::Write;
+
     let texture = |r: This| {
         crate::resource::host_made(r).map(|t| {
             // SAFETY: a live resource.
             let d = unsafe { t.GetDesc() };
-            format!("{}x{} f{} flags {:#x} of {r:?}", d.Width, d.Height, d.Format.0, d.Flags.0)
+            let mut description =
+                format!("{}x{} f{} flags {:#x} of {r:?}", d.Width, d.Height, d.Format.0, d.Flags.0);
+            if let Some((address, _)) = crate::resource::texture_memory(r) {
+                let _ = write!(description, " title={address:p}");
+            }
+            description
         })
     };
     match view {

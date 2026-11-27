@@ -92,6 +92,16 @@ The diagnostics build (frame timelines, captures, GPU timing) is optional:
 
 ## Run
 
+Download the Windows x64 artifact from the **Build Foxhound package** workflow, extract the ZIP, and open
+`FoxhoundLauncher.cmd`. The package includes the compiled runtime. For a source checkout, build it first with
+`cargo build --release --locked -p victory --features diagnostics` to include the frame-time overlay.
+
+Browse to your `game_scarlett_master.exe` beside the original game archives. The launcher offers Series X and
+Series S profiles, a Native or FSR3 upscaler, frame generation, HUDless input, and the packed-light limiter.
+Native works without an SDK. For FSR3, select the `signedbin` directory from the [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases), obtained
+separately under its own license. The Series X FSR3 preset uses 1440p output with performance scaling.
+Settings, saves, cache and logs live in `%LOCALAPPDATA%\Foxhound`. First launch can stutter as shaders compile.
+
 ```powershell
 .\scripts\play-foxhound.ps1 -Exe 'D:\Games\MyDump\game_scarlett_master.exe'
 ```

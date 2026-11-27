@@ -2360,6 +2360,7 @@ enum Step {
 /// the upload buffers its GPU commands read, kept until the list is reset.
 #[derive(Default)]
 struct Deferred {
+    framegen: Option<crate::framegen::Inputs>,
     /// Destination, source, bytes.
     copies: Vec<Step>,
     uploads: Vec<ID3D12Resource>,
@@ -2640,8 +2641,8 @@ static QUEUE_ORDER: Mutex<u64> = Mutex::new(0);
 /// Since the last frame-rate line, of the thread that lands flights
 /// ([`relay`]): landings, flights landed, microseconds it waited for the
 /// card with nothing to land, microseconds it waited for fetches of card
-/// copies' pieces, microseconds of landing in all.
-static RELAY_STATS: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+/// copies' pieces, microseconds of landing in all, and fetch commands saved.
+static RELAY_STATS: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
 
 /// Of the line's things in order (a flight: the value signalled on the
 /// host's fence behind it; a write or a signal behind a flight: `None`):
@@ -2656,16 +2657,15 @@ fn landable(line: &[Option<u64>], completed: u64) -> usize {
 /// For one plan of copies in the card's memory, with [`relay`]: `flags`
 /// holds, for every piece of every range of the plan, the copy, the
 /// piece's number in the copy and whether the compare flagged it there (or
-/// did not run). The pieces to fetch, under whichever range, in order: all
+/// did not run). The pieces to fetch, under whichever range: all
 /// of them flagged under any. Two ranges of a plan may hold parts of the same
 /// 64 KiB piece; the compare hashes the whole piece for each and stores
 /// the hash, so the second of them may find it stored already and not
 /// flag it.
-fn flagged_pieces(flags: &[(usize, u32, bool)]) -> Vec<(usize, u32)> {
-    let mut pieces: Vec<(usize, u32)> = flags.iter().filter(|f| f.2).map(|f| (f.0, f.1)).collect();
-    pieces.sort_unstable();
-    pieces.dedup();
-    pieces
+fn flagged_pieces(
+    flags: impl IntoIterator<Item = (usize, u32, bool)>,
+) -> std::collections::HashSet<(usize, u32), std::hash::BuildHasherDefault<AddressHash>> {
+    flags.into_iter().filter_map(|(copy, piece, flagged)| flagged.then_some((copy, piece))).collect()
 }
 
 #[cfg(test)]
@@ -2700,7 +2700,7 @@ mod relay_tests {
         // Copy a: piece 3 under two ranges, flagged under the first only;
         // piece 4 not flagged; copy b: piece 3 not flagged, piece 9 flagged.
         let flags = [(a, 3, true), (a, 4, false), (a, 3, false), (b, 3, false), (b, 9, true)];
-        let fetch = flagged_pieces(&flags);
+        let fetch = flagged_pieces(flags);
         assert!(fetch.contains(&(a, 3)));
         assert!(!fetch.contains(&(a, 4)));
         assert!(!fetch.contains(&(b, 3)));
@@ -2724,6 +2724,12 @@ fn late_most() -> usize {
     *MOST.get_or_init(|| {
         std::env::var("VICTORY_LATE_WAIT_LISTS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(256).max(1)
     })
+}
+
+/// Throttle the number of retained lists without draining unrelated flights.
+/// Relay 1 keeps its existing full waits for title-memory dependencies.
+fn wait_for_list_room() -> bool {
+    relay_exact() || relay() && crate::asked_for!("VICTORY_RELAY1_LIST_WATERMARK")
 }
 
 /// Whether a submission with bottom-of-pipe writes may fly
@@ -3780,12 +3786,13 @@ fn late_line(frames: f64) {
             "the relay per frame (VICTORY_RELAY=1): {:.1} flights landed in {:.1} landings by the thread that copies back, \
              beside the submitting thread; that thread waited {:.1} ms for the card with nothing to land and {:.1} ms for \
              fetches of card copies' pieces, and was {:.1} ms landing in all (the frame line's \"copying back\" is its time; \
-             \"settles\" above are waits of other threads for it)",
+             \"settles\" above are waits of other threads for it); {:.0} fetch commands saved",
             r[1],
             r[0],
             r[2] / 1000.0,
             r[3] / 1000.0,
             r[4] / 1000.0,
+            r[5],
         );
         if send::own() {
             let t: Vec<f64> = send::STATS.iter().map(|r| r.swap(0, Ordering::Relaxed) as f64 / frames).collect();
@@ -4781,7 +4788,7 @@ impl Host {
             let mut seen = std::collections::HashSet::new();
             for &(plan, behind) in plans {
                 plan.picked_found(differs);
-                let flags: Vec<(usize, u32, bool)> = plan
+                let flags = plan
                     .ranges
                     .iter()
                     .filter(|r| !r.picked)
@@ -4791,16 +4798,15 @@ impl Host {
                             let wanted = suspects.map_or(flagged, |s| s.wanted((r.shadow.id(), r.span.first + p), flagged));
                             (std::sync::Arc::as_ptr(&r.shadow) as usize, r.span.first + p, wanted)
                         })
-                    })
-                    .collect();
-                let fetched = flagged_pieces(&flags);
+                    });
+                let fetched = flagged_pieces(flags);
                 for r in plan.ranges.iter().filter(|r| !r.picked) {
                     let copy = std::sync::Arc::as_ptr(&r.shadow) as usize;
                     if upcheck::on() {
                         upcheck::declared(r.shadow.id(), r.span.from as usize, r.span.to as usize);
                     }
                     for p in 0..r.span.pieces {
-                        if fetched.binary_search(&(copy, r.span.first + p)).is_err() {
+                        if !fetched.contains(&(copy, r.span.first + p)) {
                             continue;
                         }
                         let (lo, hi) = r.shadow.card_piece(&r.span, p);
@@ -4896,8 +4902,21 @@ impl Host {
             (|| -> windows::core::Result<u64> {
                 allocator.Reset()?;
                 list.Reset(&allocator, None)?;
-                for (shadow, lo, hi, at) in check.as_ref().map_or(&pieces, |c| &c.copies) {
-                    list.CopyBufferRegion(&buffer, *at, &shadow.buffer, *lo as u64, (*hi - *lo) as u64);
+                let copies = check.as_ref().map_or(&pieces, |c| &c.copies);
+                let coalesce = crate::asked_for!("VICTORY_RELAY_COALESCE_FETCH");
+                let mut saved = 0;
+                // Only group adjacent bytes of the same buffer on both ends.
+                // Landing and torn-read checks keep their original pieces.
+                for run in copies.chunk_by(|a, b| {
+                    coalesce && std::sync::Arc::ptr_eq(&a.0, &b.0) && a.2 == b.1 && a.3 + (a.2 - a.1) as u64 == b.3
+                }) {
+                    let (shadow, lo, _, at) = &run[0];
+                    let hi = run[run.len() - 1].2;
+                    list.CopyBufferRegion(&buffer, *at, &shadow.buffer, *lo as u64, (hi - *lo) as u64);
+                    saved += run.len() - 1;
+                }
+                if saved != 0 {
+                    RELAY_STATS[5].fetch_add(saved as u64, Ordering::Relaxed);
                 }
                 list.Close()?;
                 let lists = [Some(list.cast::<ID3D12CommandList>()?)];
@@ -5319,10 +5338,14 @@ impl Host {
         late_threads();
         if let Some(cut) = {
             let runs: Vec<&HostList> = order.iter().map(|&i| lists[i].host()).collect();
+            for run in &runs {
+                run.take_coming();
+            }
             card_steps::cut_for(&runs)
         } {
             match split(lists, order, cut) {
                 Ok([(lists, order), (more, behind)]) => {
+                    card_steps::PLACED_CUTS.fetch_add(1, Ordering::Relaxed);
                     let first: Vec<usize> = parts.iter().copied().filter(|&p| p < cut).collect();
                     let second: Vec<usize> = parts.iter().filter(|&&p| p > cut).map(|p| p - cut).collect();
                     self.execute_parts(lists, order, &first);
@@ -5379,7 +5402,7 @@ impl Host {
             self.settle(&mut submitted, WHY_WRITES);
         } else if sizes {
             self.settle(&mut submitted, WHY_READ);
-        } else if most && relay_exact() {
+        } else if most && wait_for_list_room() {
             // Until there are fewer, not until there are none.
             relay_wait(WHY_MOST, |line| line.lists < late_most());
         } else if most {
@@ -5637,6 +5660,9 @@ impl Host {
     /// ([`joins`]): those go to the queue in calls of their own, one after the
     /// other, as they would have.
     fn submit<'a>(&'a self, runs: &[&HostList], parts: &[usize], late: bool) -> Option<(std::sync::MutexGuard<'a, u64>, Sent)> {
+        for run in runs {
+            run.take_coming();
+        }
         let called = std::time::Instant::now();
         #[cfg(feature = "diagnostics")]
         crate::copystat::submission_begins();
@@ -5647,6 +5673,9 @@ impl Host {
         // Upscalings these lists recorded, in submission order: the next
         // present tags the latest (frame generation).
         for run in runs {
+            if let Some(input) = run.deferred().framegen.take() {
+                crate::framegen::submitted(input);
+            }
             let id = run.take_upscale();
             if id != 0 {
                 crate::streamline::submitted(id);
@@ -5681,7 +5710,9 @@ impl Host {
             && let Some(why) = late_blocked(runs)
         {
             waited_for_flights = true;
-            if relay_exact() && why == WHY_READ {
+            if why == WHY_READ
+                && (relay_exact() || relay() && crate::asked_for!("VICTORY_RELAY1_READ_WATERMARK"))
+            {
                 // Only until the flights that may write what is read have
                 // landed: their copy-back's end, not the card's other work.
                 relay_wait(why, |line| {
@@ -6473,7 +6504,9 @@ impl HostList {
         }
         self.batches_common();
         self.card_budget_out();
-        self.take_coming();
+        if !crate::asked_for!("VICTORY_HEAP_JOIN_AT_SUBMIT") {
+            self.take_coming();
+        }
         #[cfg(feature = "diagnostics")]
         if let Some((heap, back)) = self.stamps() {
             let count = (self.notes.lock().unwrap_or_else(|e| e.into_inner()).len() as u32).min(STAMPS - 1);
@@ -6492,7 +6525,7 @@ impl HostList {
     }
 
     /// `work` finds, on a thread of ours, refreshes that belong at this
-    /// place among the list's steps; they are there when the list is closed.
+    /// place among the list's steps; they are there before submission.
     pub(crate) fn refreshes_coming(&self, work: impl FnOnce() -> Vec<aside::Refresh> + Send + 'static) {
         self.take_coming();
         let at = self.deferred().copies.len();
@@ -6502,7 +6535,8 @@ impl HostList {
 
     /// The refreshes that were still to come are put among the steps.
     fn take_coming(&self) {
-        let Some((at, coming)) = self.coming.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        let mut pending = self.coming.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((at, coming)) = pending.take() else {
             return;
         };
         let found = coming.wait();
@@ -6577,7 +6611,7 @@ impl HostList {
         self._alive.used();
         self.upscale.store(0, Ordering::Relaxed);
         self.hudless.store(0, Ordering::Relaxed);
-        *self.coming.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.take_coming();
         *self.deferred() = Deferred::default();
         self.states.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.twins.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -6715,7 +6749,7 @@ impl HostList {
     /// as [`HostList::transition`] does a title resource's host copy, and
     /// records the barrier: for textures that are not a title resource's
     /// host copy (colour twins) and for the copies between the two.
-    fn settle(&self, copy: &std::sync::Arc<crate::resource::HostTexture>, wanted: u32) {
+    pub(crate) fn settle(&self, copy: &std::sync::Arc<crate::resource::HostTexture>, wanted: u32) {
         let wanted = legal_for(copy.flags(), wanted);
         self.changed_something();
         let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
@@ -7605,6 +7639,10 @@ impl HostList {
     }
 
     /// The list recorded upscaling `id` (`crate::streamline`).
+    pub(crate) fn framegen_input(&self, input: crate::framegen::Inputs) {
+        self.deferred().framegen = Some(input);
+    }
+
     pub(crate) fn mark_upscale(&self, id: u64) {
         self.upscale.store(id, Ordering::Relaxed);
     }
@@ -8054,7 +8092,7 @@ fn split_line(frames: f64) {
     );
     tracing::info!(
         "the pass over the heap's views per frame: {:.1} ms looking at slots, {:.1} their copies' spans and refreshes, {:.1} textures; the \
-         first two beside the recording (VICTORY_HEAP_PASS_ASIDE), {:.1} ms waited for at the lists' close",
+         first two beside the recording (VICTORY_HEAP_PASS_ASIDE), {:.1} ms waiting to join the heap scans",
         h[0],
         h[1],
         h[2],
@@ -8573,18 +8611,53 @@ impl Batch {
             crate::watch::ask_ahead(&ranges);
         }
         FLUSHES[3].fetch_add(spans.len() as u64, Ordering::Relaxed);
-        crate::shadow::wide_each(spans.len() + due.len(), move |i| {
+        // Split unusually large refresh spans at fixed boundaries so one
+        // worker does not own a multi-megabyte window while the others wait.
+        // Shadow::take_all disables its nested worker pool for this mode.
+        let chunk = std::env::var("VICTORY_REFRESH_CHUNK_MIB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0)
+            << 20;
+        if chunk > 0 {
+            spans = spans
+                .into_iter()
+                .flat_map(|(shadow, from, to)| {
+                    let mut cuts = vec![from];
+                    let mut at = (from / chunk + 1) * chunk;
+                    while at < to {
+                        cuts.push(at);
+                        at += chunk;
+                    }
+                    cuts.push(to);
+                    cuts.windows(2)
+                        .map(|pair| (shadow.clone(), pair[0], pair[1]))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        }
+        // Claim a few whole spans at once so workers publish fewer queue
+        // claims and skip counts while handling the large heap refresh.
+        let grouped = many && crate::asked_for!("VICTORY_REFRESH_JOB_BATCH");
+        let grain = if grouped { 8 } else { 1 };
+        crate::shadow::wide_each(spans.len().div_ceil(grain) + due.len(), move |i| {
             // The textures first: they are the longer pieces.
             let Some(i) = i.checked_sub(due.len()) else {
                 due[i].refresh();
                 return;
             };
-            let (shadow, from, to) = &spans[i];
-            if many && shadow.nothing_new(*from, *to - *from) {
-                FLUSHES[2].fetch_add(1, Ordering::Relaxed);
-                return;
+            let start = i * grain;
+            let mut skipped = 0;
+            for (shadow, from, to) in &spans[start..(start + grain).min(spans.len())] {
+                if many && shadow.nothing_new(*from, *to - *from) {
+                    skipped += 1;
+                } else {
+                    Self::update(shadow, *from, *to);
+                }
             }
-            Self::update(shadow, *from, *to);
+            if skipped != 0 {
+                FLUSHES[2].fetch_add(skipped, Ordering::Relaxed);
+            }
         });
         if ahead {
             crate::watch::ask_ahead_done();
@@ -9219,6 +9292,9 @@ pub(crate) fn swap_format(format: DXGI_FORMAT) -> Option<DXGI_FORMAT> {
 const BUFFERS: u32 = 2;
 
 struct Presenter {
+    framegen: Option<crate::framegen::Presentation>,
+    framegen_plane: Option<crate::compose::Composer>,
+    framegen_ui: Option<ID3D12Resource>,
     swap_chain: IDXGISwapChain3,
     width: u32,
     height: u32,
@@ -9238,6 +9314,8 @@ struct Presenter {
 /// The frame rate, shown in the window's caption every second and logged
 /// every few seconds.
 struct Meter {
+    #[cfg(feature = "diagnostics")]
+    present_times: Option<crate::present_times::PresentTimes>,
     since: std::time::Instant,
     frames: u32,
     #[cfg(feature = "diagnostics")]
@@ -9252,6 +9330,8 @@ impl Meter {
     fn new() -> Self {
         let now = std::time::Instant::now();
         Meter {
+            #[cfg(feature = "diagnostics")]
+            present_times: crate::present_times::PresentTimes::from_env(),
             since: now,
             frames: 0,
             #[cfg(feature = "diagnostics")]
@@ -9270,6 +9350,13 @@ impl Meter {
 
     /// Counts a presented frame.
     fn frame(&mut self, hwnd: HWND) {
+        #[cfg(feature = "diagnostics")]
+        if let Some(times) = self.present_times.as_mut() {
+            if let Err(error) = times.frame() {
+                tracing::warn!(%error, "application present timings stopped");
+                self.present_times = None;
+            }
+        }
         #[cfg(feature = "diagnostics")]
         tracing::debug!(target: "victory_gpu::frame", token = crate::frame::current(), "present");
         #[cfg(feature = "diagnostics")]
@@ -9786,6 +9873,9 @@ impl Host {
             // Presents sent ahead hold back buffers until they have run.
             settle_now(WHY_SYNC);
             crate::streamline::resizing();
+            if let Some(fg) = &mut p.framegen {
+                fg.disable(&p.swap_chain);
+            }
             // SAFETY: no back buffer is held; every submission was waited for.
             let resized = unsafe {
                 p.swap_chain
@@ -9793,6 +9883,8 @@ impl Host {
             };
             match resized {
                 Ok(()) => {
+                    p.framegen_plane = None;
+                    p.framegen_ui = None;
                     if p.format != format {
                         p.composer = None;
                     }
@@ -9854,6 +9946,23 @@ impl Host {
             copy.reset();
             copy.keep(texture);
             let list = &copy.list;
+            let separate_ui = p.framegen.as_ref().is_some_and(|fg| {
+                if planes.is_some() {
+                    if p.framegen_plane.is_none() {
+                        p.framegen_plane = crate::compose::Composer::single_plane(self, format).ok();
+                    }
+                    if p.framegen_ui.is_none() {
+                        let mut desc = back.GetDesc();
+                        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                        let heap = D3D12_HEAP_PROPERTIES { Type: D3D12_HEAP_TYPE_DEFAULT, ..Default::default() };
+                        let _ = self.device.CreateCommittedResource(
+                            &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, None, &mut p.framegen_ui,
+                        );
+                    }
+                }
+                let ui = p.framegen_ui.as_ref().filter(|_| planes.is_some() && p.framegen_plane.is_some());
+                fg.register_ui(ui, [width, height]) && ui.is_some()
+            });
             let composed = if let Some((over, over_state, base_fmt, over_fmt)) = planes {
                 copy.keep(over);
                 if let Some(composer) = p.composer.as_mut() {
@@ -9867,14 +9976,26 @@ impl Host {
                     pre.push(transition(&back, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
                     list.ResourceBarrier(&pre);
                     let compose_slot = slot.map_or(0, |i| i + 1);
-                    if let Err(err) = composer.record(
+                    let record = if separate_ui
+                        && let (Some(plane), Some(ui)) = (&mut p.framegen_plane, &p.framegen_ui)
+                    {
+                        copy.keep(ui);
+                        list.ResourceBarrier(&[transition(ui, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_RENDER_TARGET)]);
+                        let result = plane.record(self, 2 * compose_slot, list, [(texture, base_fmt); 2], &back, (width, height))
+                            .and_then(|()| plane.record(self, 2 * compose_slot + 1, list, [(over, over_fmt); 2], ui, (width, height)));
+                        list.ResourceBarrier(&[transition(ui, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COMMON)]);
+                        result
+                    } else {
+                        composer.record(
                         self,
                         compose_slot,
                         list,
                         [(texture, base_fmt), (over, over_fmt)],
                         &back,
                         (width, height),
-                    ) {
+                        )
+                    };
+                    if let Err(err) = record {
                         copy.close();
                         drop(back);
                         drop(presenter);
@@ -9980,6 +10101,14 @@ impl Host {
                 ));
                 list.ResourceBarrier(&post);
             }
+            let generated = p.framegen.as_mut().is_some_and(|fg| {
+                let hudless = if planes.is_none() && crate::framegen::hudless_wanted() {
+                    crate::streamline::hudless_for(texture)
+                } else {
+                    None
+                };
+                fg.prepare(&p.swap_chain, &self.device, copy, [width, height], frame, hudless.as_ref())
+            });
             copy.close();
             let flown = match slot {
                 Some(i) => {
@@ -10015,7 +10144,16 @@ impl Host {
                 },
             );
             let called = crate::streamline::present_called(&presenting);
-            let _ = p.swap_chain.Present(0, DXGI_PRESENT(0));
+            let begin = generated.then(std::time::Instant::now);
+            let presented = p.swap_chain.Present(u32::from(generated), DXGI_PRESENT(0));
+            if generated && let Some(fg) = &mut p.framegen {
+                if presented.is_ok() {
+                    fg.presented(&p.swap_chain, frame, begin.map_or(0, |at| at.elapsed().as_micros() as u64));
+                } else {
+                    tracing::warn!(?presented, frame, "FidelityFX present failed");
+                    fg.disable(&p.swap_chain);
+                }
+            }
             crate::streamline::present_returned(called);
             crate::streamline::present_ends(presenting);
             showing.next("the frame meter");
@@ -10065,6 +10203,12 @@ impl Host {
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 ..Default::default()
             };
+            let amd_proxy = crate::ffx::framegen_enabled()
+                .then(|| crate::framegen::Presentation::create(&factory, &self.queue, hwnd, &desc))
+                .flatten();
+            let (swap_chain, framegen) = if let Some((chain, fg)) = amd_proxy {
+                (chain, Some(fg))
+            } else {
             // With frame generation, through Streamline's factory proxy and
             // on its queue proxy: the swap chain is its proxy.
             let proxied = crate::streamline::swap_chain_factory(&factory).map(|(proxy, queue)| {
@@ -10093,11 +10237,16 @@ impl Host {
                     factory.CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)?.cast::<IDXGISwapChain3>()?,
                 ),
             };
+                (swap_chain, None)
+            };
             let copy = self.new_list()?;
             copy.close();
             tracing::info!(width, height, format = format.0, "presenting to a window");
             self.log_video_memory("right after the swap chain is made");
             Ok(Presenter {
+                framegen,
+                framegen_plane: None,
+                framegen_ui: None,
                 swap_chain,
                 width,
                 height,

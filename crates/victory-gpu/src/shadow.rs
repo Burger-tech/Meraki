@@ -4088,11 +4088,23 @@ impl Shadow {
         // copies, every frame. A range that was taken whole, and not written
         // since, is as it was.
         let ranged = if crate::watch::light() { self.ranged(from, to) } else { 0 };
+        // A covering stamp proves that pages absent from this journal
+        // already have valid bytes in the copy.
+        let sparse = ranged != 0 && crate::asked_for!("VICTORY_REFRESH_SPARSE");
         let (mut runs, mut run) = (Vec::new(), None::<(usize, bool)>);
         // Pages taken before and written since: in the order of their runs.
         let mut again_at: Vec<(usize, u64)> = Vec::new();
         let last = (to - 1) / PAGE;
-        for page in from / PAGE..=last {
+        let mut page = from / PAGE;
+        while page <= last {
+            if sparse && !writes.peek().is_some_and(|&&(written, _)| written == page) {
+                if let Some((first, known)) = run.take() {
+                    runs.push(((first * PAGE).max(from), page * PAGE, known));
+                }
+                let Some(&&(next, _)) = writes.peek() else { break };
+                page = next;
+                continue;
+            }
             let write = match writes.peek() {
                 Some(&&(p, w)) if p == page => {
                     writes.next();
@@ -4124,6 +4136,7 @@ impl Shadow {
             } else if let Some((first, known)) = run.take() {
                 runs.push(((first * PAGE).max(from), (page * PAGE).min(to), known));
             }
+            page += 1;
         }
         // Cut to the range: next to it shaders may be writing the copy.
         if let Some((first, known)) = run {
@@ -4149,7 +4162,11 @@ impl Shadow {
         const LONG: usize = 1 << 20;
         const PART: usize = 256 << 10;
         let bytes = runs.iter().map(|r| r.1 - r.0).sum();
-        if bytes < LONG || !crate::watch::light() {
+        let chunked = std::env::var("VICTORY_REFRESH_CHUNK_MIB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|value| value > 0);
+        if bytes < LONG || !crate::watch::light() || chunked {
             for (from, to, known) in runs {
                 self.take(from, to, known);
             }

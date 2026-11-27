@@ -1224,6 +1224,8 @@ struct Resource {
     /// access, the colour texture shaders write instead ([`Twin`]).
     #[cfg(windows)]
     host: Hosted,
+    #[cfg(windows)]
+    fsr_output: std::sync::OnceLock<Option<Box<crate::ffx::rgb9e5::Output>>>,
 }
 
 /// A title texture's host copy and the state it is in. The title's barriers
@@ -2919,6 +2921,8 @@ fn hand_out_resource(
         heap,
         heap_flags,
         backing,
+        #[cfg(windows)]
+        fsr_output: std::sync::OnceLock::new(),
         #[cfg(windows)]
         host: Hosted {
             made: std::sync::Mutex::new(None),
@@ -4880,5 +4884,32 @@ float4 lit() : SV_Target { return 1.0; }
         let d = unsafe { more.texture.GetDesc() };
         assert_eq!((more.base, d.Width, d.MipLevels), (0, 256, 9));
         assert!(more.serial != copy.serial && more.grown.load(std::sync::atomic::Ordering::Relaxed));
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn rgb9e5_fsr_output(this: This) -> Option<&'static crate::ffx::rgb9e5::Output> {
+    let resource = resource(this);
+    if !resource.desc.rgb9e5_fsr_candidate() {
+        return None;
+    }
+    let texture = host_copy(this)?;
+    resource
+        .fsr_output
+        .get_or_init(|| crate::ffx::rgb9e5::Output::new(&texture.texture).map(Box::new))
+        .as_deref()
+}
+
+#[cfg(windows)]
+impl ResourceDesc {
+    fn rgb9e5_fsr_candidate(&self) -> bool {
+        use windows::Win32::Graphics::Direct3D12::*;
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
+        self.format == DXGI_FORMAT_R9G9B9E5_SHAREDEXP.0 as u32
+            && self.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D.0 as u32
+            && self.depth_or_array_size == 1
+            && self.mip_levels == 1
+            && self.sample_count == 1
+            && self.flags & 0xf == 0x5
     }
 }

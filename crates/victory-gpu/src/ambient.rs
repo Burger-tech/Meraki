@@ -562,6 +562,104 @@ fn uav_barrier(list: &ID3D12GraphicsCommandList) {
     unsafe { list.ResourceBarrier(&[barrier]) };
 }
 
+#[cfg(feature = "diagnostics")]
+pub(crate) fn packed_light_limit() -> Option<f32> {
+    static LIMIT: OnceLock<Option<f32>> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let limit = std::env::var("VICTORY_PACKED_LIGHT_LIMIT").ok()?.trim().parse::<f32>().ok()?;
+        (limit.is_finite() && (1.0..=1024.0).contains(&limit)).then_some(limit)
+    })
+}
+
+/// Diagnostic mitigation for extreme reflection history values. Only the
+/// bound packed light texture is touched, and only its out-of-range texels.
+#[cfg(feature = "diagnostics")]
+pub(crate) fn limit_packed_light(
+    list: &HostList,
+    texture: &ID3D12Resource,
+    view: D3D12_GPU_DESCRIPTOR_HANDLE,
+    size: [u32; 2],
+    limit: f32,
+) -> bool {
+    const SOURCE: &str = r#"
+cbuffer Options : register(b0) { float limit; };
+RWTexture2D<uint> light : register(u0);
+[RootSignature("RootConstants(num32BitConstants=1, b0), DescriptorTable(UAV(u0))")]
+[numthreads(8, 8, 1)]
+void clean(uint3 at : SV_DispatchThreadID) {
+    uint w, h;
+    light.GetDimensions(w, h);
+    if (at.x >= w || at.y >= h) return;
+    uint word = light[at.xy];
+    uint3 mantissas = uint3(word, word >> 9, word >> 18) & 511;
+    float peak = max(mantissas.x, max(mantissas.y, mantissas.z)) * exp2(float(word >> 27) - 24.0);
+    if (peak > limit) light[at.xy] = 0;
+}
+"#;
+    struct Limiter {
+        root: ID3D12RootSignature,
+        pipeline: ID3D12PipelineState,
+    }
+    // SAFETY: these D3D12 objects are free-threaded.
+    unsafe impl Send for Limiter {}
+    unsafe impl Sync for Limiter {}
+    static LIMITER: OnceLock<Option<Limiter>> = OnceLock::new();
+    let Some(limiter) = LIMITER.get_or_init(|| {
+        let host = host()?;
+        let make = || -> windows::core::Result<Limiter> {
+            let code = crate::host::compile(SOURCE, s!("clean"), s!("cs_5_1"))?;
+            // SAFETY: the bytecode contains its root signature.
+            unsafe {
+                let root = host.device.CreateRootSignature(0, &code)?;
+                let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                    pRootSignature: std::mem::transmute_copy(&root),
+                    CS: D3D12_SHADER_BYTECODE { pShaderBytecode: code.as_ptr().cast(), BytecodeLength: code.len() },
+                    ..Default::default()
+                };
+                Ok(Limiter { root, pipeline: host.device.CreateComputePipelineState(&desc)? })
+            }
+        };
+        make().inspect_err(|error| tracing::warn!(%error, "packed light limiter could not start")).ok()
+    }) else {
+        return false;
+    };
+    let command = &list.list;
+    static LOCAL_BARRIER: OnceLock<bool> = OnceLock::new();
+    let scoped = crate::ab::pick("VICTORY_PACKED_LIGHT_LOCAL_BARRIER").unwrap_or_else(|| {
+        *LOCAL_BARRIER.get_or_init(|| crate::switch::on("VICTORY_PACKED_LIGHT_LOCAL_BARRIER"))
+    });
+    let barrier = || {
+        if !scoped {
+            uav_barrier(command);
+            return;
+        }
+        // SAFETY: the command list is open and retains the texture named by
+        // the UAV. The barrier borrows the resource for recording.
+        unsafe {
+            command.ResourceBarrier(&[D3D12_RESOURCE_BARRIER {
+                Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+                Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+                Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                    UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                        pResource: std::mem::transmute_copy(texture),
+                    }),
+                },
+            }]);
+        }
+    };
+    barrier();
+    // SAFETY: an open list has the heap and the R32_UINT UAV used by the writer.
+    unsafe {
+        command.SetComputeRootSignature(&limiter.root);
+        command.SetComputeRoot32BitConstant(0, limit.to_bits(), 0);
+        command.SetComputeRootDescriptorTable(1, view);
+        command.SetPipelineState(&limiter.pipeline);
+        command.Dispatch(size[0].div_ceil(8), size[1].div_ceil(8), 1);
+    }
+    barrier();
+    true
+}
+
 /// Whether the light of a frame has been kept: the estimate has something
 /// to begin with.
 static KEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

@@ -1122,6 +1122,37 @@ const SHAPES: usize = 1 << (62 - PLACED_ADDRESS_BITS);
 /// hold the address (10 and 11).
 type Shape = (bool, [u32; 14], [u32; 14]);
 
+// Placed shapes are immutable and indices are never recycled. Publish
+// each shape before any descriptor can reference it, in blocks allocated
+// only as needed.
+const SHAPE_BLOCK: usize = 1024;
+static PLACED_SHAPES: [std::sync::OnceLock<Box<[std::sync::OnceLock<Shape>]>>; SHAPES / SHAPE_BLOCK] =
+    [const { std::sync::OnceLock::new() }; SHAPES / SHAPE_BLOCK];
+
+fn shape_cache_requested() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        #[cfg(feature = "diagnostics")]
+        if crate::ab::bit("VICTORY_PLACED_SHAPE_CACHE").is_some() {
+            return true;
+        }
+        crate::switch::on("VICTORY_PLACED_SHAPE_CACHE")
+    })
+}
+
+fn cached_shape(index: usize) -> Option<&'static Shape> {
+    PLACED_SHAPES.get(index / SHAPE_BLOCK)?.get()?[index % SHAPE_BLOCK].get()
+}
+
+fn placed_from_shape(payload: u64, &(unordered, resource, rest): &Shape) -> View {
+    let address = payload & ((1 << PLACED_ADDRESS_BITS) - 1);
+    let mut desc = [0u32; 16];
+    desc[..10].copy_from_slice(&rest[..10]);
+    (desc[10], desc[11]) = (address as u32, (address >> 32) as u32);
+    desc[12..].copy_from_slice(&rest[10..]);
+    View::Placed(unordered, resource, desc)
+}
+
 /// Whether constant buffer views and views of placed memory are named whole
 /// in their records ([`Views`]). On by default; `VICTORY_VIEW_INLINE=0`
 /// makes every view a table entry, as before.
@@ -1201,19 +1232,20 @@ impl Views {
         let at = self.shapes.len() as u32;
         self.shapes.push(shape);
         self.shape_index.insert(shape, at);
+        if shape_cache_requested() {
+            let index = at as usize;
+            let block = PLACED_SHAPES[index / SHAPE_BLOCK].get_or_init(|| {
+                std::iter::repeat_with(std::sync::OnceLock::new).take(SHAPE_BLOCK).collect()
+            });
+            let _ = block[index % SHAPE_BLOCK].set(shape);
+        }
         Some(at)
     }
 
     /// The view of placed memory [`placed_words`] named.
     fn placed_of(&self, i: u32, generation: u32) -> Option<View> {
         let payload = payload(i, generation);
-        let address = payload & ((1 << PLACED_ADDRESS_BITS) - 1);
-        let &(unordered, resource, rest) = self.shapes.get((payload >> PLACED_ADDRESS_BITS) as usize)?;
-        let mut desc = [0u32; 16];
-        desc[..10].copy_from_slice(&rest[..10]);
-        (desc[10], desc[11]) = (address as u32, (address >> 32) as u32);
-        desc[12..].copy_from_slice(&rest[10..]);
-        Some(View::Placed(unordered, resource, desc))
+        self.shapes.get((payload >> PLACED_ADDRESS_BITS) as usize).map(|shape| placed_from_shape(payload, shape))
     }
 
     /// The record words of `view` as a table entry, if it has one.
@@ -1331,13 +1363,19 @@ pub(crate) fn views_kept() -> [u64; 8] {
             _ => {}
         }
     }
+    let cached_bytes = if shape_cache_requested() {
+        views.shapes.len().div_ceil(SHAPE_BLOCK) * SHAPE_BLOCK * size_of::<std::sync::OnceLock<Shape>>()
+    } else {
+        0
+    };
     [
         views.list.len() as u64,
         views.free.len() as u64,
         views.list.capacity() as u64 * each
             + views.index.len() as u64 * each * 3 / 2
             + views.shapes.capacity() as u64 * shape
-            + views.shape_index.len() as u64 * shape * 3 / 2,
+            + views.shape_index.len() as u64 * shape * 3 / 2
+            + cached_bytes as u64,
         constants,
         placed,
         views.shapes.len() as u64,
@@ -1508,7 +1546,15 @@ fn view_at(i: u32, generation: u32) -> Option<View> {
             (*current == generation).then(|| view.clone())
         }
         CONSTANT => Some(constant_of(i, generation)),
-        PLACED => views_read().placed_of(i, generation),
+        PLACED => {
+            let payload = payload(i, generation);
+            if crate::asked_for!("VICTORY_PLACED_SHAPE_CACHE")
+                && let Some(shape) = cached_shape((payload >> PLACED_ADDRESS_BITS) as usize)
+            {
+                return Some(placed_from_shape(payload, shape));
+            }
+            views_read().placed_of(i, generation)
+        }
         _ => None,
     }
 }
@@ -2008,6 +2054,12 @@ mod tests {
         // The same shape, unordered: another shape.
         create_placed_uav(null, &resource, &desc, at);
         assert_eq!(view(at), Some(View::Placed(true, resource, desc)));
+        if crate::asked_for!("VICTORY_PLACED_SHAPE_CACHE") {
+            let [_, i, generation] = record_at(at).unwrap();
+            let index = (payload(i, generation) >> PLACED_ADDRESS_BITS) as usize;
+            let stored = VIEWS.read().unwrap();
+            assert_eq!(cached_shape(index), stored.shapes.get(index));
+        }
         assert_eq!(shapes(), 2);
         // Placed memory past 1 TiB (not title memory) is a table entry.
         (desc[10], desc[11]) = (0, 0x100);

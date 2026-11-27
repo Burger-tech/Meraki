@@ -2,7 +2,7 @@
 //! still write, done on the card in the flights' order instead of on the
 //! CPU after a wait for them (`VICTORY_CARD_STEPS`, see [`stage`]).
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU64};
 
 use super::*;
 use crate::shadow::Shadow;
@@ -11,7 +11,9 @@ use crate::shadow::Shadow;
 /// of descriptor tables (`Step::Fill` with a slot of its own), `2` the
 /// title's buffer copies (`Step::Copy`) too, with the steps of the same
 /// submission that depend on them. Only with the relay's second stage
-/// (`relay_exact`).
+/// (`relay_exact`) by default. `VICTORY_RELAY1_CARD_FILLS=1` also permits
+/// stage 1 with the first relay stage, leaving its full waits in place
+/// for any submission whose reads the planner cannot safely move.
 ///
 /// Why: eleven dispatches a frame (the skinning passes, in two early
 /// submissions) write through a view of the title's whole 174 MB heap, at
@@ -83,6 +85,17 @@ pub(super) fn stage() -> u32 {
     })
 }
 
+fn first_relay_fills() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        stage() == 1 && relay() && std::env::var_os("VICTORY_RELAY1_CARD_FILLS").is_some_and(|v| v == "1")
+    })
+}
+
+fn enabled() -> bool {
+    stage() != 0 && (relay_exact() || first_relay_fills())
+}
+
 /// Whether a copy at its place in a list ([`place`]) is only in the way of
 /// what is done on the card in front of the lists if that stands behind it in
 /// them (`VICTORY_PLACED_ORDER=1`; off: wherever it stands), and a
@@ -105,6 +118,13 @@ fn placed_order() -> bool {
 
 /// Why [`plan`] refuses for [`place`].
 const BEHIND_PLACED: &str = "a copy at its place in a list writes what it reads, or reads or writes what it writes";
+
+/// Submission splits that kept placed copies ahead of dependent fills.
+pub(super) static PLACED_CUTS: AtomicU64 = AtomicU64::new(0);
+
+/// Placed-copy refusals by the position of the dependent step.
+#[cfg(feature = "diagnostics")]
+static PLACED_REFUSALS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 /// The bytes of our buffer between reading and writing: what one submission
 /// may do this way (each place read once, however many fills take it).
@@ -467,7 +487,7 @@ fn does_of(written: &[(usize, usize)], runs: &[&HostList]) -> (Vec<Does>, Vec<(u
 /// list ([`BEHIND_PLACED`]) is done on the card in front of a submission of
 /// its own, behind that copy.
 pub(super) fn cut_for(runs: &[&HostList]) -> Option<usize> {
-    if stage() == 0 || !relay_exact() || !placed_order() || runs.len() < 2 {
+    if !enabled() || !placed_order() || runs.len() < 2 {
         return None;
     }
     // (Most submissions have none.)
@@ -658,7 +678,7 @@ impl Host {
     /// ([`stage`]), the list that does them. `None` if nothing is in the
     /// way or the old wait is due. Under the submission lock.
     pub(super) fn card_steps(&self, runs: &[&HostList]) -> Option<Taken> {
-        if stage() == 0 || !relay_exact() {
+        if !enabled() {
             return None;
         }
         let (written, copies) = {
@@ -689,7 +709,18 @@ impl Host {
     fn take_steps(&self, written: &[(usize, usize)], runs: &[&HostList]) -> Result<Option<Taken>, &'static str> {
         let mut spent = crate::timeline::span("steps on the card: chosen");
         let (does, steps) = does_of(written, runs);
-        let chosen = plan(&does, stage(), placed_order(), &mut None)?;
+        let mut behind = None;
+        let chosen = plan(&does, stage(), placed_order(), &mut behind);
+        #[cfg(feature = "diagnostics")]
+        if matches!(chosen, Err(BEHIND_PLACED)) {
+            let position = match behind {
+                None => 0,
+                Some((placed, step)) if steps[placed].0 == steps[step].0 => 1,
+                Some(_) => 2,
+            };
+            PLACED_REFUSALS[position].fetch_add(1, Ordering::Relaxed);
+        }
+        let chosen = chosen?;
         if chosen.is_empty() {
             return Ok(None);
         }
@@ -906,15 +937,20 @@ pub(super) fn log(frames: f64) {
     let d: Vec<f64> = DONE.iter().map(|d| d.swap(0, Ordering::Relaxed) as f64 / frames).collect();
     tracing::info!(
         "steps done on the card instead of waiting for flights, per frame (VICTORY_CARD_STEPS={}): {:.2} fills, {:.2} buffer \
-         copies, {:.1} KB; {:.2} submissions refused and waited",
+         copies, {:.1} KB; {:.2} submissions refused and waited, {:.2} placed-copy cuts",
         stage(),
         d[0],
         d[1],
         d[2] / 1024.0,
         d[3],
+        PLACED_CUTS.swap(0, Ordering::Relaxed) as f64 / frames,
     );
     #[cfg(feature = "diagnostics")]
     {
+        let [earlier, same, later] = PLACED_REFUSALS.each_ref().map(|n| n.swap(0, Ordering::Relaxed) as f64 / frames);
+        if earlier + same + later > 0.0 {
+            tracing::info!("placed-copy refusals per frame: {earlier:.2} earlier steps only, {same:.2} same list, {later:.2} later list");
+        }
         let noted = NOTED.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
         let mut noted: Vec<_> = noted.into_iter().collect();
         noted.sort_unstable_by_key(|(_, e)| std::cmp::Reverse(e.0));

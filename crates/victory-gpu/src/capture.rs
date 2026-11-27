@@ -356,6 +356,189 @@ pub(crate) fn save_read_back(
 static TARGETS: std::sync::Mutex<Vec<(usize, std::sync::Arc<crate::resource::HostTexture>)>> =
     std::sync::Mutex::new(Vec::new());
 
+struct StageSample {
+    frame: u64,
+    label: &'static str,
+    display_format: DXGI_FORMAT,
+    buffer: ID3D12Resource,
+    footprint: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+}
+
+static STAGE_SAMPLES: std::sync::Mutex<Vec<StageSample>> = std::sync::Mutex::new(Vec::new());
+
+/// Probe known dispatches that bind the FP16 scene as a UAV. Off by default.
+pub(crate) fn scene_uav_probe(pipeline: &str) -> Option<(u64, u64, [&'static str; 2])> {
+    static MASK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static SKY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let (offset, labels) = match pipeline {
+        "[compute f0c91b4d2578f5bf]" if *MASK.get_or_init(|| crate::switch::on("VICTORY_CAPTURE_MATERIAL_MASKS")) => {
+            (56, ["material-mask-before", "material-mask-after"])
+        }
+        "[compute 348e1e8c414c7eca]" if *SKY.get_or_init(|| crate::switch::on("VICTORY_CAPTURE_SKY_SCENE")) => {
+            (72, ["sky-before", "sky-after"])
+        }
+        _ => return None,
+    };
+    let frame = crate::queue::presented() + 1;
+    (folder().is_some() && listed(frame)).then_some((frame, offset, labels))
+}
+
+fn packed_light_capture_address() -> Option<usize> {
+    static ADDRESS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *ADDRESS.get_or_init(|| {
+        let text = std::env::var("VICTORY_CAPTURE_PACKED_LIGHT_ADDRESS").ok()?;
+        usize::from_str_radix(text.trim().strip_prefix("0x")?, 16).ok().filter(|&n| n != 0)
+    })
+}
+
+static PACKED_LIGHT_INPUTS: std::sync::Mutex<Vec<(usize, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep recent addresses learned from the material binding as its textures rotate.
+pub(crate) fn note_packed_light_input(address: usize) {
+    let frame = crate::queue::presented() + 1;
+    let mut inputs = PACKED_LIGHT_INPUTS.lock().unwrap_or_else(|e| e.into_inner());
+    inputs.retain(|&(known, seen)| known != address && seen.saturating_add(6) >= frame);
+    inputs.push((address, frame));
+}
+
+pub(crate) fn is_packed_light_input(address: usize, frame: u64) -> bool {
+    if packed_light_capture_address() == Some(address) {
+        return true;
+    }
+    crate::ambient::packed_light_limit().is_some()
+        && PACKED_LIGHT_INPUTS.lock().unwrap_or_else(|e| e.into_inner()).iter()
+            .any(|&(known, seen)| known == address && seen.saturating_add(6) >= frame)
+}
+
+/// Inspect the writers of the traced material input.
+pub(crate) fn packed_light_writer(pipeline: &str) -> Option<(u64, u32, [&'static str; 2])> {
+    let (offset, labels) = match pipeline {
+        "[compute 34fb51b8a0312e82]" => (152, ["caustics-before", "caustics-after"]),
+        "[compute 71883e40620a567a]" => (128, ["reflection-temporal-before", "reflection-temporal-after"]),
+        "[compute 6fad2980c2774c90]" => (40, ["reflection-history-before", "reflection-history-after"]),
+        "[compute dce085c07b9414b6]" => (40, ["reflection-blur-before", "reflection-blur-after"]),
+        _ => return None,
+    };
+    let frame = crate::queue::presented() + 1;
+    (crate::ambient::packed_light_limit().is_some()
+        || packed_light_capture_address().is_some() && folder().is_some() && listed(frame))
+        .then_some((frame, offset, labels))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PackedLightWriter {
+    pub(crate) target: crate::object::This,
+    pub(crate) offset: u32,
+    pub(crate) frame: u64,
+    pub(crate) labels: [&'static str; 2],
+}
+
+pub(crate) fn packed_light_sample(
+    list: &crate::host::HostList,
+    probe: Option<PackedLightWriter>,
+    after: bool,
+) {
+    if let Some(PackedLightWriter { target, frame, labels, .. }) = probe
+        && folder().is_some() && listed(frame)
+    {
+        stage_sample(list, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, frame, labels[usize::from(after)], DXGI_FORMAT_R32_UINT);
+    }
+}
+
+/// Select the primary material variants that write the scene render target.
+pub(crate) fn material_draw_probe(pipeline: &crate::pipeline::host::HostPipeline) -> Option<(u64, [&'static str; 2])> {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| folder().is_some() && crate::switch::on("VICTORY_CAPTURE_MATERIAL_DRAWS")) {
+        return None;
+    }
+    let frame = crate::queue::presented() + 1;
+    if !listed(frame) {
+        return None;
+    }
+    material_draw_labels(pipeline).map(|labels| (frame, labels))
+}
+
+pub(crate) fn material_draw_labels(pipeline: &crate::pipeline::host::HostPipeline) -> Option<[&'static str; 2]> {
+    pipeline.stages.iter().find_map(|stage| {
+        let labels = match stage.shader.hash.as_str() {
+            "1cd9bc634417a981" => ["standard-before", "standard-after"],
+            "48e74d16cbfa45e3" => ["standard-nodir-before", "standard-nodir-after"],
+            "e5a6ec7657990b89" => ["hair-before", "hair-after"],
+            "a944b2f732760372" => ["hair-nodir-before", "hair-nodir-after"],
+            _ => return None,
+        };
+        Some(labels)
+    })
+}
+
+/// Snapshot an FP16 scene texture at its point in the recorded GPU list.
+/// The presenter drains preceding work before mapping these readbacks.
+pub(crate) fn scene_sample(list: &crate::host::HostList, resource: crate::object::This, state: D3D12_RESOURCE_STATES, frame: u64, label: &'static str) {
+    stage_sample(list, resource, state, frame, label, DXGI_FORMAT_R16G16B16A16_FLOAT);
+}
+
+/// Snapshot an expected host format so a probe cannot copy an unrelated view.
+/// The packed light writer probes treat their R32_UINT words as RGB9E5.
+pub(crate) fn stage_sample(
+    list: &crate::host::HostList,
+    resource: crate::object::This,
+    state: D3D12_RESOURCE_STATES,
+    frame: u64,
+    label: &'static str,
+    format: DXGI_FORMAT,
+) {
+    let Some(host) = crate::host::host() else { return };
+    let Some(texture) = crate::resource::host_resource(resource) else { return };
+    // SAFETY: a live title texture.
+    let desc = unsafe { texture.GetDesc() };
+    if desc.Format != format || desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        || desc.MipLevels != 1 || desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1
+    {
+        return;
+    }
+    let mut samples = STAGE_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+    if samples.len() >= 12 || samples.iter().any(|sample| sample.frame == frame && sample.label == label) {
+        return;
+    }
+    crate::list::ensure_state(list, resource, D3D12_RESOURCE_STATE_COPY_SOURCE.0 as u32);
+    let readback = read_back(&host.device, &list.list, texture);
+    crate::list::ensure_state(list, resource, state.0 as u32);
+    if let Some((buffer, footprint)) = readback {
+        list.keep(texture);
+        list.keep(&buffer);
+        let display_format = if format == DXGI_FORMAT_R32_UINT { DXGI_FORMAT_R9G9B9E5_SHAREDEXP } else { format };
+        samples.push(StageSample { frame, label, display_format, buffer, footprint });
+    }
+}
+
+fn dump_stage_samples(presented: u64) {
+    let samples: Vec<_> = STAGE_SAMPLES.lock().unwrap_or_else(|e| e.into_inner())
+        .extract_if(.., |sample| sample.frame <= presented)
+        .collect();
+    if samples.is_empty() {
+        return;
+    }
+    crate::host::settle_for_present();
+    for StageSample { frame, label, display_format, buffer, footprint } in samples {
+        let f = footprint.Footprint;
+        let mut data = std::ptr::null_mut();
+        // SAFETY: the presenter drained GPU work and this buffer holds the
+        // texture footprint recorded into it.
+        unsafe {
+            if buffer.Map(0, None, Some(&mut data)).is_err() {
+                continue;
+            }
+            let pitch = f.RowPitch as usize;
+            let rows = std::slice::from_raw_parts(data.cast::<u8>(), pitch * f.Height as usize);
+            if let Some(rgba) = to_rgba(display_format.0 as u32, f.Width as usize, f.Height as usize, pitch, rows) {
+                let name = format!("frame-{frame}-{label}");
+                save_as(&name, f.Width, f.Height, f.Width as usize * 4, false, &rgba);
+            }
+            buffer.Unmap(0, None);
+        }
+    }
+}
+
 fn dump_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| folder().is_some() && crate::switch::on("VICTORY_DUMP_TARGETS"))
@@ -377,6 +560,7 @@ pub(crate) fn note_target(resource: crate::object::This) {
 /// At the present of frame `frame`: saves the noted targets.
 pub(crate) fn dump_targets(frame: u64) {
     use std::sync::atomic::Ordering::Relaxed;
+    dump_stage_samples(frame);
     let targets = std::mem::take(&mut *TARGETS.lock().unwrap_or_else(|e| e.into_inner()));
     let Some(host) = crate::host::host() else { return };
     for (i, (resource, copy)) in targets.iter().enumerate() {
@@ -612,6 +796,11 @@ fn to_rgba(format: u32, w: usize, h: usize, pitch: usize, rows: &[u8]) -> Option
         53..=54 => (2, Box::new(move |b| [half(u16_at(b, 0)); 3])),
         55..=59 => (2, Box::new(move |b| [f32::from(u16_at(b, 0)); 3])),
         60..=65 => (1, Box::new(move |b| [f32::from(b[0]); 3])),
+        67 => (4, Box::new(move |b| {
+            let word = u32_at(b, 0);
+            let scale = 2f32.powi((word >> 27) as i32 - 24);
+            [0, 9, 18].map(|shift| ((word >> shift) & 0x1ff) as f32 * scale)
+        })),
         _ => return None,
     };
     let values: Vec<[f32; 3]> = (0..h)

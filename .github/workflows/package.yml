@@ -1,0 +1,45 @@
+name: Build Foxhound package
+
+on:
+  push:
+    branches: [foxhound-launcher]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install
+      - name: Check asset policy
+        shell: pwsh
+        run: cargo xtask policy
+      - name: Build runtime
+        shell: pwsh
+        run: cargo build --release --locked -p victory --features diagnostics
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'foxhound-package'
+          New-Item -ItemType Directory -Force -Path "$stage\target\release", "$stage\scripts", "$stage\docs" | Out-Null
+          Copy-Item target\release\victory.exe "$stage\target\release\victory.exe"
+          Copy-Item scripts\foxhound-launcher.ps1, scripts\play-foxhound.ps1 "$stage\scripts"
+          Copy-Item FoxhoundLauncher.cmd "$stage\FoxhoundLauncher.cmd"
+          Copy-Item README.md, LICENSE "$stage"
+          Copy-Item docs\*.md "$stage\docs"
+          powershell.exe -NoProfile -Command '$tokens = $null; $errors = $null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "scripts/foxhound-launcher.ps1"), [ref]$tokens, [ref]$errors); if ($errors) { $errors; exit 1 }'
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher syntax check failed' }
+          & "$stage\target\release\victory.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged runtime failed to start' }
+          @("This package contains no game files.", "Select game_scarlett_master.exe with FoxhoundLauncher.cmd.", "The optional FSR SDK is supplied separately by the user.") | Set-Content "$stage\PACKAGE-README.txt"
+          Compress-Archive -Path "$stage\*" -DestinationPath "foxhound-windows-x64-$env:GITHUB_SHA.zip"
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foxhound-windows-x64
+          path: foxhound-windows-x64-*.zip
+          if-no-files-found: error
