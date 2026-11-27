@@ -24,6 +24,32 @@ use windows::Win32::Graphics::Direct3D12::ID3D12Resource;
 use crate::host::{HostList, host};
 use crate::watch::PAGE;
 
+/// Experimental refresh chunk size in bytes, or zero when disabled.
+pub(crate) fn refresh_chunk_size() -> usize {
+    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("VICTORY_REFRESH_CHUNK_MIB")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .and_then(|mib| mib.checked_mul(1 << 20))
+            .unwrap_or(0)
+    })
+}
+
+struct Copied {
+    /// The latest asking after which each full page was copied.
+    pages: Vec<u64>,
+    /// The last and longest copied ranges and their asking numbers. These
+    /// record partial pages that cannot be marked complete in `pages`.
+    ranges: [(usize, usize, u64); 2],
+}
+
+impl Copied {
+    fn covering_asking(&self, from: usize, to: usize) -> u64 {
+        self.ranges.iter().filter(|r| r.0 <= from && to <= r.1).map(|r| r.2).max().unwrap_or(0)
+    }
+}
+
 /// A title buffer's host copy.
 pub(crate) struct Shadow {
     /// Title memory's pages of 4 KiB (from the one `start` lies in on), a bit
@@ -40,14 +66,8 @@ pub(crate) struct Shadow {
     /// Where the title buffer starts and how long it is.
     start: u64,
     len: u64,
-    /// Per page of title memory from `start`'s on: the write-watch asking
-    /// after which it was last copied (0: never).
-    copied: Mutex<Vec<u64>>,
-    /// Two ranges of title memory taken whole, the last one and the longest,
-    /// and the asking after which each was ([`Shadow::copy_stale`]). A page
-    /// a range holds in part cannot say so in `copied`. Locked inside
-    /// `copied`'s lock.
-    ranged: Mutex<[(usize, usize, u64); 2]>,
+    /// Copy coverage by full page and by range, protected together.
+    copied: Mutex<Copied>,
     /// Whether the memory is write-watched: unknown, yes, no.
     watched: AtomicU8,
     /// Ranges shaders of a submission not yet copied back may be writing:
@@ -730,7 +750,7 @@ pub(crate) fn stale_pages(most: usize, say: &mut dyn FnMut(&Shadow, usize, usize
             continue;
         };
         let written: std::collections::HashMap<usize, u64> = written.into_iter().collect();
-        let copied = shadow.copied.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let copied = shadow.copied.lock().unwrap_or_else(|e| e.into_inner()).pages.clone();
         for (i, &at) in copied.iter().enumerate() {
             let page = start / PAGE + i;
             if at == 0 || written.get(&page).is_some_and(|&w| w > at) {
@@ -2976,7 +2996,7 @@ pub(crate) fn window_use() -> [u64; 8] {
     let loose = LOOSE.write().unwrap_or_else(|e| e.into_inner());
     for s in loose.values() {
         let copied = s.copied.lock().unwrap_or_else(|e| e.into_inner());
-        let pages = copied.iter().filter(|&&at| at != 0).count() as u64;
+        let pages = copied.pages.iter().filter(|&&at| at != 0).count() as u64;
         out[0] += (pages * PAGE as u64).min(s.len);
         if crate::host::references(&s.buffer) > 1 {
             out[1] += 1;
@@ -3174,8 +3194,7 @@ impl Shadow {
             gpu,
             start,
             len,
-            copied: Mutex::new(vec![0; pages as usize]),
-            ranged: Mutex::default(),
+            copied: Mutex::new(Copied { pages: vec![0; pages as usize], ranges: Default::default() }),
             watched: AtomicU8::new(0),
             pending: Mutex::default(),
             flights: Mutex::default(),
@@ -3703,7 +3722,7 @@ impl Shadow {
         let base = start / PAGE;
         let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
         busy.into_iter().any(|(a, e)| match crate::watch::asked(a, e) {
-            Some((_, written)) => !stale_pages_in(base, &copied, a, e, &written).is_empty(),
+            Some((_, written)) => !stale_pages_in(base, &copied.pages, a, e, &written).is_empty(),
             None => true,
         })
     }
@@ -3764,7 +3783,7 @@ impl Shadow {
             };
             let stale: Vec<usize> = {
                 let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
-                stale_pages_in(base, &copied, a, e, &written)
+                stale_pages_in(base, &copied.pages, a, e, &written)
             };
             if stale.is_empty() {
                 continue;
@@ -3839,7 +3858,7 @@ impl Shadow {
             {
                 let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
                 for page in taken {
-                    if let Some(at) = copied.get_mut(page - base) {
+                    if let Some(at) = copied.pages.get_mut(page - base) {
                         *at = now;
                     }
                 }
@@ -3971,7 +3990,7 @@ impl Shadow {
             return false;
         }
         let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
-        let same = crate::watch::nothing_new(from, to, start / PAGE, &copied, self.ranged(from, to));
+        let same = crate::watch::nothing_new(from, to, start / PAGE, &copied.pages, copied.covering_asking(from, to));
         #[cfg(feature = "diagnostics")]
         if same {
             use crate::copystat::{C, add};
@@ -3979,13 +3998,6 @@ impl Shadow {
             add(C::Unchanged, (to - from) as u64);
         }
         same
-    }
-
-    /// The latest asking after which a range that holds `[from, to)` was
-    /// taken whole (0: none is known). The caller holds `copied`'s lock.
-    fn ranged(&self, from: usize, to: usize) -> u64 {
-        let ranged = self.ranged.lock().unwrap_or_else(|e| e.into_inner());
-        ranged.iter().filter(|r| r.0 <= from && to <= r.1).map(|r| r.2).max().unwrap_or(0)
     }
 
     /// [`Shadow::update`] of `[from, to)` (inside the buffer) where no
@@ -4087,7 +4099,7 @@ impl Shadow {
         // of the heap's buffer views alone two ends for each of 4,400
         // copies, every frame. A range that was taken whole, and not written
         // since, is as it was.
-        let ranged = if crate::watch::light() { self.ranged(from, to) } else { 0 };
+        let ranged = if crate::watch::light() { copied.covering_asking(from, to) } else { 0 };
         // A covering stamp proves that pages absent from this journal
         // already have valid bytes in the copy.
         let sparse = ranged != 0 && crate::asked_for!("VICTORY_REFRESH_SPARSE");
@@ -4112,7 +4124,7 @@ impl Shadow {
                 }
                 _ => 0,
             };
-            let at = &mut copied[page - base];
+            let at = &mut copied.pages[page - base];
             let taken = (*at).max(ranged);
             if taken == 0 || write > taken {
                 // A page only partly in the range is copied in part: it
@@ -4146,7 +4158,7 @@ impl Shadow {
         let bytes = self.take_all(runs);
         if crate::watch::light() {
             // All of the range is in the copy as of this asking.
-            let mut ranged = self.ranged.lock().unwrap_or_else(|e| e.into_inner());
+            let ranged = &mut copied.ranges;
             ranged[0] = (from, to, now);
             if to - from >= ranged[1].1 - ranged[1].0 {
                 ranged[1] = (from, to, now);
@@ -4162,11 +4174,7 @@ impl Shadow {
         const LONG: usize = 1 << 20;
         const PART: usize = 256 << 10;
         let bytes = runs.iter().map(|r| r.1 - r.0).sum();
-        let chunked = std::env::var("VICTORY_REFRESH_CHUNK_MIB")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .is_some_and(|value| value > 0);
-        if bytes < LONG || !crate::watch::light() || chunked {
+        if bytes < LONG || !crate::watch::light() || refresh_chunk_size() != 0 {
             for (from, to, known) in runs {
                 self.take(from, to, known);
             }
@@ -4810,7 +4818,7 @@ impl Shadow {
             return false;
         };
         let mut copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(at) = copied.get_mut(page) else {
+        let Some(at) = copied.pages.get_mut(page) else {
             return false;
         };
         let held = *at != 0 && *at >= before && crate::watch::block_published(block);

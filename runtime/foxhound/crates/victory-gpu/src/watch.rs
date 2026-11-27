@@ -127,7 +127,8 @@ struct Journal {
     parts: std::collections::HashMap<usize, [u64; PARTS], std::hash::BuildHasherDefault<PageHash>>,
     /// Page ranges asked ahead for a submission's refreshes ([`ask_ahead`])
     /// and the asking that did: `writes` answers for a range inside one
-    /// from the journal, without another kernel call.
+    /// from the journal, without another kernel call. Starts and ends are
+    /// increasing. A range contained in another range is redundant.
     ahead: Vec<(usize, usize)>,
     ahead_asked: u64,
     /// The ahead asking stands for a whole submission ([`ask_once`]): no
@@ -149,6 +150,24 @@ static JOURNAL: RwLock<Journal> = RwLock::new(Journal {
     ahead_asked: 0,
     kept: false,
 });
+
+fn index_ahead(ranges: &mut Vec<(usize, usize)>) {
+    ranges.sort_unstable_by_key(|&(from, to)| (from, std::cmp::Reverse(to)));
+    let mut last_end = None;
+    ranges.retain(|&(_, end)| {
+        if last_end.is_some_and(|last| end <= last) {
+            return false;
+        }
+        last_end = Some(end);
+        true
+    });
+}
+
+fn ahead_covers(ranges: &[(usize, usize)], first: usize, last: usize) -> bool {
+    // Of the ranges beginning at or before first, the last reaches furthest.
+    let past = ranges.partition_point(|&(start, _)| start <= first);
+    past != 0 && ranges[past - 1].1 >= last
+}
 
 fn journal() -> std::sync::RwLockReadGuard<'static, Journal> {
     if let Ok(j) = JOURNAL.try_read() {
@@ -325,13 +344,18 @@ const AHEAD_MAX: usize = (1 << 30) / PAGE;
 /// submissions refresh thousands of host copies (6,664 askings a frame,
 /// 456 ms, in run 14). Ranges that are not write-watched, or lie alone, are
 /// left to `writes`.
-pub(crate) fn ask_ahead(ranges: &[(usize, usize)]) {
+pub(crate) fn ask_ahead(ranges: impl IntoIterator<Item = (usize, usize)>) {
+    // A kept submission-wide answer takes precedence. Skip even preparing
+    // the per-flush ranges when that answer already stands.
+    if journal().kept {
+        return;
+    }
     let mut pieces: Vec<(usize, usize)> = ranges
-        .iter()
+        .into_iter()
         // Not view memory known by its bits: the kernel would refuse the
         // asking (and, asked together with others, theirs).
         .filter(|r| r.0 < r.1 && !published(r.0, r.1))
-        .map(|&(start, end)| (start / PAGE, end.div_ceil(PAGE)))
+        .map(|(start, end)| (start / PAGE, end.div_ceil(PAGE)))
         .collect();
     if pieces.len() < 2 {
         return;
@@ -359,6 +383,7 @@ pub(crate) fn ask_ahead(ranges: &[(usize, usize)]) {
         ask_run(&pieces[i..k], &mut asked, &mut written);
         i = k;
     }
+    index_ahead(&mut asked);
     note_hot(&written);
     let mut j = journal_mut();
     j.ahead_asked = next_asking();
@@ -545,7 +570,7 @@ pub(crate) fn ask_once(ranges: &[(usize, usize)]) {
         return;
     }
     ask_once_end();
-    ask_ahead(ranges);
+    ask_ahead(ranges.iter().copied());
     ask_rest(ranges);
 }
 
@@ -563,17 +588,23 @@ fn ask_rest(ranges: &[(usize, usize)]) {
     // askings a frame with the switch on, as without it). They are asked
     // here, once; what is not write-watched stays with `writes`.
     let mut written = Vec::new();
+    let mut rest = Vec::new();
     for &(start, end) in ranges {
         if start >= end || published(start, end) {
             continue;
         }
         let (first, last) = (start / PAGE, end.div_ceil(PAGE));
-        if !ahead.iter().any(|&(a, b)| a <= first && last <= b)
+        if !ahead_covers(&ahead, first, last)
+            && !rest.iter().any(|&(a, b)| a <= first && last <= b)
             && let Some(pages) = kernel_written(first, last)
         {
             written.extend(pages);
-            ahead.push((first, last));
+            rest.push((first, last));
         }
+    }
+    if !rest.is_empty() {
+        ahead.extend(rest);
+        index_ahead(&mut ahead);
     }
     note_hot(&written);
     let mut j = journal_mut();
@@ -660,9 +691,7 @@ fn ask_run(pieces: &[(usize, usize)], asked: &mut Vec<(usize, usize)>, written: 
 pub(crate) fn asked(start: usize, end: usize) -> Option<(u64, Vec<(usize, u64)>)> {
     let (first, last) = (start / PAGE, end.div_ceil(PAGE));
     let j = journal();
-    j.ahead
-        .iter()
-        .any(|&(a, b)| a <= first && last <= b)
+    ahead_covers(&j.ahead, first, last)
         .then(|| (j.ahead_asked, j.written.range(first..last).map(|(&p, &w)| (p, w)).collect()))
 }
 
@@ -681,7 +710,7 @@ pub(crate) fn writes(start: usize, end: usize, guarded: bool) -> Option<(u64, Ve
     let (first, last) = (start / PAGE, end.div_ceil(PAGE));
     let of = |j: &Journal| -> Vec<(usize, u64)> { j.written.range(first..last).map(|(&p, &w)| (p, w)).collect() };
     // Asked ahead with the submission's other ranges: the journal has it.
-    let ahead = |j: &Journal| j.ahead.iter().any(|&(a, b)| a <= first && last <= b).then(|| (j.ahead_asked, of(j)));
+    let ahead = |j: &Journal| ahead_covers(&j.ahead, first, last).then(|| (j.ahead_asked, of(j)));
     if let Some(known) = ahead(&journal()) {
         return Some(known);
     }
@@ -765,7 +794,7 @@ pub(crate) fn nothing_new(start: usize, end: usize, base: usize, copied: &[u64],
         crate::faultbook::note(crate::faultbook::What::Known, first, last, 1);
     }
     let j = journal();
-    if !known && !j.ahead.iter().any(|&(a, b)| a <= first && last <= b) {
+    if !known && !ahead_covers(&j.ahead, first, last) {
         return false;
     }
     let Some(taken) = first.checked_sub(base).and_then(|from| copied.get(from..last - base)) else {
@@ -3244,6 +3273,44 @@ mod parts_tests {
     use super::*;
 
     #[test]
+    fn coverage_index_preserves_single_asking_boundaries() {
+        let original = [(20, 30), (2, 5), (20, 40), (7, 13), (5, 8), (38, 43), (3, 4), (20, 40)];
+        let mut indexed = original.to_vec();
+        index_ahead(&mut indexed);
+        for first in 0..45 {
+            for last in first..45 {
+                assert_eq!(
+                    ahead_covers(&indexed, first, last),
+                    original.iter().any(|&(a, b)| a <= first && last <= b),
+                    "{first}..{last}"
+                );
+            }
+        }
+        assert!(!ahead_covers(&[], 2, 3));
+    }
+
+    #[test]
+    #[ignore = "synthetic timing"]
+    fn ahead_coverage_lookup_cost() {
+        use std::hint::black_box;
+        for count in [32, 256, 1024] {
+            let original: Vec<_> = (0..count).rev().map(|i| (i * 8, i * 8 + 5)).collect();
+            let mut indexed = original.clone();
+            index_ahead(&mut indexed);
+            let queries: Vec<_> = (0..12_000).map(|i| ((i * 7919) % (count * 8), 3)).collect();
+            let measure = |contains: &dyn Fn(usize, usize) -> bool| {
+                let start = std::time::Instant::now();
+                let hits = black_box(&queries).iter().filter(|&&(from, len)| contains(from, from + len)).count();
+                (hits, start.elapsed())
+            };
+            let linear = measure(&|first, last| original.iter().any(|&(a, b)| a <= first && last <= b));
+            let binary = measure(&|first, last| ahead_covers(&indexed, first, last));
+            assert_eq!(linear.0, binary.0);
+            println!("{count} ranges, {} queries: linear {:?}, indexed {:?}", queries.len(), linear.1, binary.1);
+        }
+    }
+
+    #[test]
     fn the_parts_of_a_page_written_since_it_was_taken() {
         let mut j = Journal {
             written: BTreeMap::new(),
@@ -3656,7 +3723,7 @@ mod tests {
         assert_ne!(p, 0);
         // One range: `ask_ahead` leaves it.
         let ranges = [(p, p + 4 * PAGE)];
-        ask_ahead(&ranges);
+        ask_ahead(ranges.iter().copied());
         let (copied, _) = writes(p, p + 4 * PAGE, false).expect("watched");
         // SAFETY: committed pages of ours.
         unsafe { ((p + PAGE) as *mut u8).write_volatile(1) };
